@@ -3,13 +3,13 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct InMemEntry {
     pub file_id: usize,
-    pub val_sz: usize,
+    pub val_sz: u32,
     pub val_pos: usize,
     pub tstamp: u32,
 }
 
 impl InMemEntry {
-    pub fn new(file_id: usize, val_sz: usize, val_pos: usize, tstamp: u32) -> Self {
+    pub fn new(file_id: usize, val_sz: u32, val_pos: usize, tstamp: u32) -> Self {
         Self {
             file_id,
             val_sz,

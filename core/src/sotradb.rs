@@ -3,9 +3,9 @@ use crate::utils::calc_crc;
 use anyhow::Result;
 use core::str;
 use std::fmt::Debug;
-use std::io::{Read, Write};
+use std::fs;
+use std::io::{BufReader, Read, Write};
 use std::io::{Seek, SeekFrom};
-use std::mem::take;
 use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
@@ -14,20 +14,24 @@ use std::{
 struct DBEntry {
     crc: u32,
     tstamp: u32,
-    ksz: usize,
-    vsz: usize,
+    ksz: u32,
+    vsz: u32,
     key: Vec<u8>,
     val: Vec<u8>,
 }
 
+/// returns a raw db entry to persist from the given data
 fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
-    let mut o = vec![];
+    let mut o = Vec::with_capacity(4 + 4 + k.len() + v.len());
+    let kl = k.len() as u32;
+    let vl = v.len() as u32;
+
     o.extend_from_slice(&crc.to_be_bytes());
     o.extend_from_slice(&tstamp.to_be_bytes());
-    o.extend_from_slice(&k.len().to_be_bytes());
-    o.extend_from_slice(&v.len().to_be_bytes());
-    o.extend_from_slice(&k);
-    o.extend_from_slice(&v);
+    o.extend_from_slice(&kl.to_be_bytes());
+    o.extend_from_slice(&vl.to_be_bytes());
+    o.extend_from_slice(k);
+    o.extend_from_slice(v);
     o
 }
 
@@ -41,15 +45,58 @@ pub struct SotraDB {
 impl SotraDB {
     /// creates an instance of `SotraDB` with the given `namespace`
     pub fn new<T: Into<String> + Debug>(namespace: T) -> Result<Self> {
-        let dir_builder = DirBuilder::new();
         let namespace = namespace.into();
-        dir_builder.create(format!("./{}", &namespace))?;
 
-        Ok(Self {
+        if !fs::exists(format!("./{namespace}"))? {
+            let dir_builder = DirBuilder::new();
+            dir_builder.create(format!("./{}", &namespace))?;
+        }
+
+        let mut db = Self {
             cur_cask: namespace,
             cur_id: 0,
             im_store: InMemKVStore::new(),
-        })
+        };
+
+        db.restore();
+
+        Ok(db)
+    }
+
+    /// builds the in-mem store by scanning the data files
+    fn restore(&mut self) -> Result<()> {
+        // TODO check for hint file later
+        let file = File::options()
+            .read(true)
+            .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
+
+        let mut reader = BufReader::new(file);
+        let mut buf = [0; 4 + 4 + 4 + 4]; // 4 crc + 4 tstamp + 4 ksz + 4 vsz
+        let mut i = 4;
+        let mut j = 7;
+
+        while let Ok(size) = reader.read(&mut buf) && size != 0 {
+            let tstamp = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
+            i = j + 1;
+            j += 4;
+            let ksz = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
+            i = j + 1;
+            j += 4;
+            let vsz = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
+            // read key using ksz, val using vsz
+            let mut key = vec![0; ksz as usize];
+            reader.read(&mut key)?;
+            let val_pos = reader.stream_position().unwrap();
+            let mut val = vec![0; vsz as usize];
+            reader.read(&mut val)?;
+
+            let entry = InMemEntry::new(self.cur_id, vsz, val_pos as usize, tstamp);
+            self.im_store.put(String::from_utf8(key).unwrap(), entry);
+            i = 4;
+            j = 7;
+        }
+
+        Ok(())
     }
 
     /// gets the value, if present, for the given key `k`
@@ -69,14 +116,14 @@ impl SotraDB {
             file.seek(SeekFrom::Current(val_pos as i64))?;
             // println!("file pos is {}", file.stream_pos);
 
-            let mut v = Vec::with_capacity(val_sz);
+            let mut v = Vec::with_capacity(val_sz as usize);
             let mut f = file.take(val_sz as u64);
 
             f.read_to_end(&mut v)?;
 
             Ok(Some(str::from_utf8(&v).unwrap().to_string()))
         } else {
-            return Ok(None);
+            Ok(None)
         }
     }
 
@@ -99,9 +146,9 @@ impl SotraDB {
             .append(true)
             .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
         let file_id = self.cur_id;
-        let ksz = k.len();
-        let val_pos = file.seek(SeekFrom::End(0))? as usize + 4 + 4 + 8 + 8 + ksz;
-        let vsz = v.len();
+        let ksz = k.len() as u32;
+        let val_pos = file.seek(SeekFrom::End(0))? as usize + 4 + 4 + 4 + 4 + ksz as usize;
+        let vsz = v.len() as u32;
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
         let crc = calc_crc(tstamp, ksz, vsz, k, v);
 
@@ -112,11 +159,15 @@ impl SotraDB {
     }
 }
 
+#[cfg(test)]
 mod tests {
+    use std::fs;
+
     use crate::sotradb::SotraDB;
 
     #[test]
     fn test_logging_and_reading() {
+        fs::remove_dir_all("./names-to-addresses");
         let mut db = SotraDB::new("names-to-addresses").unwrap();
         let _ = db.put("pooja", "kalyaninagar").unwrap();
         let _ = db.put("abhi", "baner").unwrap();
@@ -128,7 +179,7 @@ mod tests {
         assert_eq!(db.im_store.len(), 6);
         let e = db.im_store.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 29);
+        assert_eq!(e.val_pos, 21);
 
         let val = db.get("pooja");
         assert!(val.is_ok());
@@ -139,5 +190,23 @@ mod tests {
         assert!(val.is_ok());
         let val = val.unwrap();
         assert_eq!(val, Some("mk".into()))
+    }
+
+    #[test]
+    fn test_restore() {
+        let mut db = SotraDB::new("test").unwrap();
+        assert_eq!(db.im_store.len(), 6);
+        let e = db.im_store.get("pooja").unwrap();
+        assert_eq!(e.file_id, 0);
+        assert_eq!(e.val_pos, 21);
+        let e = db.im_store.get("abhi").unwrap();
+        assert_eq!(e.file_id, 0);
+        assert_eq!(e.val_pos, 53);
+        let e = db.im_store.get("pads").unwrap();
+        assert_eq!(e.file_id, 0);
+        assert_eq!(e.val_pos, 78);
+        let e = db.im_store.get("jane").unwrap();
+        assert_eq!(e.file_id, 0);
+        assert_eq!(e.val_pos, 155);
     }
 }
