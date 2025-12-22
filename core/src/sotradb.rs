@@ -167,14 +167,14 @@ mod tests {
 
     #[test]
     fn test_logging_and_reading() {
-        fs::remove_dir_all("./names-to-addresses");
+        let _ = fs::remove_dir_all("./names-to-addresses");
         let mut db = SotraDB::new("names-to-addresses").unwrap();
-        let _ = db.put("pooja", "kalyaninagar").unwrap();
-        let _ = db.put("abhi", "baner").unwrap();
-        let _ = db.put("pads", "hinjewadi").unwrap();
-        let _ = db.put("ashu", "baner").unwrap();
-        let _ = db.put("swap", "usa").unwrap();
-        let _ = db.put("jane", "mk").unwrap();
+        db.put("pooja", "kalyaninagar").unwrap();
+        db.put("abhi", "baner").unwrap();
+        db.put("pads", "hinjewadi").unwrap();
+        db.put("ashu", "baner").unwrap();
+        db.put("swap", "usa").unwrap();
+        db.put("jane", "mk").unwrap();
 
         assert_eq!(db.im_store.len(), 6);
         let e = db.im_store.get("pooja").unwrap();
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_restore() {
-        let mut db = SotraDB::new("test").unwrap();
+        let db = SotraDB::new("test").unwrap();
         assert_eq!(db.im_store.len(), 6);
         let e = db.im_store.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
