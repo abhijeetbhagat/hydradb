@@ -101,6 +101,7 @@ impl SotraDB {
 
     /// gets the value, if present, for the given key `k`
     pub fn get(&self, k: &str) -> Result<Option<String>> {
+        println!("im len {}", self.im_store.len());
         if let Some(in_mem_entry) = self.im_store.get(k) {
             let InMemEntry {
                 file_id,
@@ -208,5 +209,10 @@ mod tests {
         let e = db.im_store.get("jane").unwrap();
         assert_eq!(e.file_id, 0);
         assert_eq!(e.val_pos, 155);
+
+        let val = db.get("pooja");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert_eq!(val, Some("kalyaninagar".into()));
     }
 }

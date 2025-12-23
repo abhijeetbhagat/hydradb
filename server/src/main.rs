@@ -1,49 +1,64 @@
 use core::sotradb::SotraDB;
-use tokio::sync::mpsc::Sender;
+use std::sync::{Arc, RwLock};
+use tokio::{io::AsyncWriteExt, sync::mpsc::Sender};
 
 use anyhow::Result;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
 };
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<DBCmd>(100);
-
-    std::thread::spawn(move || -> Result<()> {
-        // TODO this namespace needs to come as a cli arg
-        let mut db = SotraDB::new("name-to-addresses")?;
-        while let Some(cmd) = rx.blocking_recv() {
-            match cmd {
-                DBCmd::Put(key, val) => {
-                    db.put(key, val);
-                }
-                DBCmd::Get(key) => db.get(key),
-                _ => {}
-            }
-        }
-
-        Ok(())
-    });
+    // TODO this namespace needs to come as a cli arg
+    let mut db = Arc::new(RwLock::new(SotraDB::new("name-to-addresses")?));
 
     let listener = TcpListener::bind("127.0.0.1:9898").await?;
+    println!("SotraDB v0.1.0 listening on localhost:9898");
     while let (socket, _) = listener.accept().await? {
-        let tx = tx.clone();
+        let db = db.clone();
         tokio::spawn(async move {
-            process(socket, tx).await;
+            process(socket, db).await;
         });
     }
 
     Ok(())
 }
 
-async fn process(stream: TcpStream, tx: Sender<DBCmd>) -> Result<()> {
-    let mut reader = BufReader::new(stream);
+async fn process(mut stream: TcpStream, db: Arc<RwLock<SotraDB>>) -> Result<()> {
+    let (reader, writer) = stream.split();
+    let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
     let mut cmd = String::new();
     loop {
         reader.read_line(&mut cmd).await?;
-        tx.send(parse(&cmd)).await?;
+        let db_cmd = parse(&cmd);
+        match db_cmd {
+            DBCmd::Put(key, val) => {
+                println!("command recvd: put {key} {val}");
+                let mut guard = db.write().unwrap();
+                guard.put(key, val);
+            }
+            DBCmd::Get(key) => {
+                println!("command recvd: get {key}");
+                let val;
+                {
+                    let guard = db.read().unwrap();
+                    val = guard.get(&key);
+                }
+                println!("db returned {:?}", val);
+                if let Ok(Some(val)) = val {
+                    writer.write(val.as_bytes()).await?;
+                    writer.flush().await?;
+                } else {
+                    writer
+                        .write(format!("key {key} not found").as_bytes())
+                        .await?;
+                    writer.flush().await?;
+                }
+            }
+            _ => {}
+        }
         cmd.clear();
     }
 
