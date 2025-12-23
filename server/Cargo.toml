@@ -7,3 +7,4 @@ edition = "2024"
 core = {path = "../core"}
 tokio = { workspace = true}
 anyhow = { workspace = true }
+log = { workspace = true }

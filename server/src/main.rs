@@ -1,4 +1,5 @@
 use core::sotradb::SotraDB;
+use log::info;
 use std::sync::{Arc, RwLock};
 use tokio::{io::AsyncWriteExt, sync::mpsc::Sender};
 
@@ -14,7 +15,7 @@ async fn main() -> Result<()> {
     let mut db = Arc::new(RwLock::new(SotraDB::new("name-to-addresses")?));
 
     let listener = TcpListener::bind("127.0.0.1:9898").await?;
-    println!("SotraDB v0.1.0 listening on localhost:9898");
+    info!("SotraDB v0.1.0 listening on localhost:9898");
     while let (socket, _) = listener.accept().await? {
         let db = db.clone();
         tokio::spawn(async move {
@@ -35,18 +36,18 @@ async fn process(mut stream: TcpStream, db: Arc<RwLock<SotraDB>>) -> Result<()> 
         let db_cmd = parse(&cmd);
         match db_cmd {
             DBCmd::Put(key, val) => {
-                println!("command recvd: put {key} {val}");
+                info!("command recvd: put {key} {val}");
                 let mut guard = db.write().unwrap();
                 guard.put(key, val);
             }
             DBCmd::Get(key) => {
-                println!("command recvd: get {key}");
+                info!("command recvd: get {key}");
                 let val;
                 {
                     let guard = db.read().unwrap();
                     val = guard.get(&key);
                 }
-                println!("db returned {:?}", val);
+                info!("db returned {:?}", val);
                 if let Ok(Some(val)) = val {
                     writer.write(val.as_bytes()).await?;
                     writer.flush().await?;
