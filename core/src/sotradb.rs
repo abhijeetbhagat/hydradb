@@ -10,6 +10,7 @@ use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
+use serde::{Serialize, Deserialize};
 
 struct DBEntry {
     crc: u32,
@@ -36,6 +37,7 @@ fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
 }
 
 /// the main bitcask storage engine
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct SotraDB {
     cur_cask: String, // dir name of the cur_cask
     cur_id: usize,    // needs to be atomic
@@ -101,13 +103,12 @@ impl SotraDB {
 
     /// gets the value, if present, for the given key `k`
     pub fn get(&self, k: &str) -> Result<Option<String>> {
-        println!("im len {}", self.im_store.len());
         if let Some(in_mem_entry) = self.im_store.get(k) {
             let InMemEntry {
-                file_id,
+                file_id: _,
                 val_sz,
                 val_pos,
-                tstamp,
+                tstamp: _,
             } = in_mem_entry;
             // println!("val_pos is {val_pos} val sz {val_sz}");
 
@@ -141,6 +142,22 @@ impl SotraDB {
         Ok(())
     }
 
+    /// deletes the given key
+    pub fn del<S: Into<String>>(&mut self, k: S) -> Result<bool> {
+        // TODO if file almost full, then create new file, bump id
+        let k = k.into();
+        let k_exists = self.im_store.has_key(&k);
+        if k_exists {
+            // mark entry as deleted
+            let _entry = self.persist(k.as_bytes(), b"TOMBSTONE")?;
+
+            // then del from im
+            self.im_store.del(&k);
+        }
+
+        Ok(k_exists)
+    }
+
     pub fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<InMemEntry> {
         let mut file = File::options()
             .create(true)
@@ -167,8 +184,19 @@ mod tests {
     use crate::sotradb::SotraDB;
 
     #[test]
+    fn test_del() {
+        let mut db = SotraDB::new("del").unwrap();
+        db.put("pooja", "kalyaninagar").unwrap();
+        db.put("abhi", "baner").unwrap();
+        db.del("pooja").unwrap();
+
+        assert_eq!(db.im_store.len(), 1);
+
+        let _ = fs::remove_dir_all("./del");
+    }
+
+    #[test]
     fn test_logging_and_reading() {
-        let _ = fs::remove_dir_all("./names-to-addresses");
         let mut db = SotraDB::new("names-to-addresses").unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
@@ -190,7 +218,9 @@ mod tests {
         let val = db.get("jane");
         assert!(val.is_ok());
         let val = val.unwrap();
-        assert_eq!(val, Some("mk".into()))
+        assert_eq!(val, Some("mk".into()));
+
+        let _ = fs::remove_dir_all("./names-to-addresses");
     }
 
     #[test]

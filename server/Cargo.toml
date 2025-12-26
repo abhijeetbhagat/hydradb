@@ -10,3 +10,5 @@ anyhow.workspace = true
 log.workspace = true
 clap.workspace = true
 env_logger.workspace = true
+openraft.workspace = true
+actix-web.workspace = true

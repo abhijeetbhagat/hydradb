@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct InMemEntry {
     pub file_id: usize,
     pub val_sz: u32,
@@ -20,6 +21,7 @@ impl InMemEntry {
 }
 
 //TODO: concurrency required
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct InMemKVStore {
     kv_store: HashMap<String, InMemEntry>,
 }
@@ -41,6 +43,10 @@ impl InMemKVStore {
 
     pub fn del(&mut self, k: &str) {
         self.kv_store.remove(k);
+    }
+
+    pub fn has_key(&self, k: &str) -> bool {
+        self.kv_store.contains_key(k)
     }
 
     pub fn len(&self) -> usize {
