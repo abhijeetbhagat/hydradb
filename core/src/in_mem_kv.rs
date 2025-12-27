@@ -27,33 +27,49 @@ pub struct InMemKVStore {
 }
 
 impl InMemKVStore {
+    /// constructs a new in-mem store
     pub fn new() -> Self {
         Self {
             kv_store: HashMap::new(),
         }
     }
 
+    /// puts the key-value pair in the store
     pub fn put(&mut self, k: String, v: InMemEntry) {
         self.kv_store.insert(k, v);
     }
 
+    /// gets the value for given key `k`
     pub fn get(&self, k: &str) -> Option<InMemEntry> {
         self.kv_store.get(k).cloned()
     }
 
+    /// deletes the given key `k`
     pub fn del(&mut self, k: &str) {
         self.kv_store.remove(k);
     }
 
+    /// checks if the given key `k` is present
     pub fn has_key(&self, k: &str) -> bool {
         self.kv_store.contains_key(k)
     }
 
+    /// returns all the keys in the in-mem store
+    pub fn keys(&self) -> Option<Vec<String>> {
+        if self.kv_store.is_empty() {
+            None
+        } else {
+            Some(self.kv_store.keys().cloned().collect())
+        }
+    }
+
+    /// returns the num of entries in the in-mem store
     pub fn len(&self) -> usize {
         self.kv_store.len()
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::{InMemEntry, InMemKVStore};
 

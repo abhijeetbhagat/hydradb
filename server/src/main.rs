@@ -4,8 +4,6 @@ use log::info;
 use anyhow::Result;
 use clap::Parser;
 
-mod dbcmd;
-
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(short, long)]

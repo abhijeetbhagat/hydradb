@@ -2,14 +2,9 @@ use actix_web::post;
 use actix_web::web;
 use actix_web::web::Data;
 use actix_web::Responder;
-use openraft::error::CheckIsLeaderError;
-use openraft::error::Infallible;
-use openraft::error::RaftError;
-use openraft::BasicNode;
 use web::Json;
 
 use crate::app::App;
-use crate::NodeId;
 use crate::Request;
 
 /**

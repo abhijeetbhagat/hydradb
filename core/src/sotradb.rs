@@ -158,7 +158,12 @@ impl SotraDB {
         Ok(k_exists)
     }
 
-    pub fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<InMemEntry> {
+    /// lists all the keys in the store
+    pub fn list_all(&self) -> Option<Vec<String>> {
+        self.im_store.keys()
+    }
+
+    fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<InMemEntry> {
         let mut file = File::options()
             .create(true)
             .append(true)
@@ -244,5 +249,22 @@ mod tests {
         assert!(val.is_ok());
         let val = val.unwrap();
         assert_eq!(val, Some("kalyaninagar".into()));
+    }
+
+    #[test]
+    fn test_list_keys() {
+        let mut db = SotraDB::new("names-to-addresses").unwrap();
+        db.put("pooja", "kalyaninagar").unwrap();
+        db.put("abhi", "baner").unwrap();
+        db.put("pads", "hinjewadi").unwrap();
+        db.put("ashu", "baner").unwrap();
+        db.put("swap", "usa").unwrap();
+        db.put("jane", "mk").unwrap();
+        let keys = db.list_all();
+        assert!(keys.is_some());
+        let keys = keys.unwrap();
+        assert_eq!(keys.len(), 6);
+
+        let _ = fs::remove_dir_all("./names-to-addresses");
     }
 }
