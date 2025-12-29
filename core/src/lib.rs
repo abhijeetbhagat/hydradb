@@ -35,7 +35,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing;
 
-pub type LogStore = log_store::LogStore<TypeConfig>;
+pub type LogStore = log_store::LogStore;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Request {
