@@ -13,3 +13,4 @@ tokio.workspace = true
 tracing.workspace = true
 actix-web.workspace = true
 reqwest.workspace = true
+sled.workspace = true

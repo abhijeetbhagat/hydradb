@@ -14,3 +14,4 @@ serde = { version = "1.0.114", features = ["derive"] }
 serde_json = { version = "1.0.57" }
 tracing = "0.1.29"
 reqwest = { version = "0.12.5", features = ["json"] }
+sled = "0.34.7"

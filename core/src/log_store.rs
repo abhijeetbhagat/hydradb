@@ -1,15 +1,22 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+use std::io;
+use std::ops::Bound;
 use std::ops::RangeBounds;
 use std::sync::Arc;
+use std::u64;
 
 use openraft::storage::LogFlushed;
+use openraft::ErrorSubject;
+use openraft::ErrorVerb;
 use openraft::LogId;
 use openraft::LogState;
 use openraft::RaftLogId;
 use openraft::RaftTypeConfig;
 use openraft::StorageError;
+use openraft::StorageIOError;
 use openraft::Vote;
+use sled::IVec;
 use tokio::sync::Mutex;
 
 /// RaftLogStore implementation with a in-memory storage
@@ -24,7 +31,9 @@ pub struct LogStoreInner<C: RaftTypeConfig> {
     last_purged_log_id: Option<LogId<C::NodeId>>,
 
     /// The Raft log.
-    log: BTreeMap<u64, C::Entry>,
+    log: sled::Db,
+
+    log_state: sled::Db,
 
     /// The commit log id.
     committed: Option<LogId<C::NodeId>>,
@@ -37,7 +46,9 @@ impl<C: RaftTypeConfig> Default for LogStoreInner<C> {
     fn default() -> Self {
         Self {
             last_purged_log_id: None,
-            log: BTreeMap::new(),
+            // TODO handle opening the db
+            log: sled::open("raft_log").unwrap(),
+            log_state: sled::open("raft_log_state").unwrap(),
             committed: None,
             vote: None,
         }
@@ -52,20 +63,41 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
     where
         C::Entry: Clone,
     {
-        let response = self
-            .log
-            .range(range.clone())
-            .map(|(_, val)| val.clone())
-            .collect::<Vec<_>>();
-        Ok(response)
+        let start = match range.start_bound() {
+            Bound::Included(&s) => Bound::Included(s.to_be_bytes()),
+            Bound::Excluded(&s) => Bound::Excluded(s.to_be_bytes()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        let end = match range.end_bound() {
+            Bound::Included(&s) => Bound::Included(s.to_be_bytes()),
+            Bound::Excluded(&s) => Bound::Excluded(s.to_be_bytes()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        self.log
+            .range((start, end))
+            .values()
+            .map(|res| {
+                let v = res.unwrap();
+                serde_json::from_slice(&v).map_err(|e| StorageError::IO {
+                    source: StorageIOError::read_logs(&e),
+                })
+            })
+            .collect::<Result<Vec<C::Entry>, StorageError<C::NodeId>>>()
     }
 
     async fn get_log_state(&mut self) -> Result<LogState<C>, StorageError<C::NodeId>> {
-        let last = self
-            .log
-            .iter()
-            .next_back()
-            .map(|(_, ent)| ent.get_log_id().clone());
+        let last = self.log.iter().next_back().map(|res| {
+            let (_, val) = res.unwrap();
+            let entry = serde_json::from_slice::<C::Entry>(&val)
+                .map_err(|e| StorageError::<C::NodeId>::IO {
+                    source: StorageIOError::read_logs(&e),
+                })
+                .unwrap();
+
+            entry.get_log_id().clone()
+        });
 
         let last_purged = self.last_purged_log_id.clone();
 
@@ -113,7 +145,10 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
     {
         // Simple implementation that calls the flush-before-return `append_to_log`.
         for entry in entries {
-            self.log.insert(entry.get_log_id().index, entry);
+            self.log.insert(
+                u64::to_be_bytes(entry.get_log_id().index),
+                serde_json::to_vec(&entry).map_err(|e| StorageIOError::write_logs(&e))?,
+            );
         }
         callback.log_io_completed(Ok(()));
 
@@ -121,11 +156,19 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
     }
 
     async fn truncate(&mut self, log_id: LogId<C::NodeId>) -> Result<(), StorageError<C::NodeId>> {
-        let keys = self
+        let keys: Vec<IVec> = self
             .log
-            .range(log_id.index..)
-            .map(|(k, _v)| *k)
-            .collect::<Vec<_>>();
+            .range(u64::to_be_bytes(log_id.index)..u64::to_be_bytes(u64::MAX))
+            .keys()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::IO {
+                source: StorageIOError::new(
+                    ErrorSubject::Store,
+                    ErrorVerb::Read,
+                    &io::Error::new(io::ErrorKind::Other, e),
+                ),
+            })?;
+
         for key in keys {
             self.log.remove(&key);
         }
@@ -143,9 +186,17 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
         {
             let keys = self
                 .log
-                .range(..=log_id.index)
-                .map(|(k, _v)| *k)
-                .collect::<Vec<_>>();
+                .range(u64::to_be_bytes(0)..=u64::to_be_bytes(log_id.index))
+                .keys()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| StorageError::IO {
+                    source: StorageIOError::new(
+                        ErrorSubject::Store,
+                        ErrorVerb::Read,
+                        &io::Error::new(io::ErrorKind::Other, e),
+                    ),
+                })?;
+
             for key in keys {
                 self.log.remove(&key);
             }
