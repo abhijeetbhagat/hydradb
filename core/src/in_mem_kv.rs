@@ -68,6 +68,10 @@ impl InMemKVStore {
     pub fn len(&self) -> usize {
         self.kv_store.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.kv_store.len() == 0
+    }
 }
 
 #[cfg(test)]
