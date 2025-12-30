@@ -11,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use serde::{Serialize, Deserialize};
+use bytes::Bytes;
 
 struct DBEntry {
     crc: u32,
@@ -102,7 +103,7 @@ impl SotraDB {
     }
 
     /// gets the value, if present, for the given key `k`
-    pub fn get(&self, k: &str) -> Result<Option<String>> {
+    pub fn get(&self, k: impl AsRef<[u8]>) -> Result<Option<Bytes>> {
         if let Some(in_mem_entry) = self.im_store.get(k) {
             let InMemEntry {
                 file_id: _,
@@ -123,18 +124,19 @@ impl SotraDB {
 
             f.read_to_end(&mut v)?;
 
-            Ok(Some(str::from_utf8(&v).unwrap().to_string()))
+            Ok(Some(v.into()))
         } else {
             Ok(None)
         }
     }
 
     /// puts the given key-value pair under the set namespace
-    pub fn put<S: Into<String>>(&mut self, k: S, v: S) -> Result<()> {
+    pub fn put(&mut self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> Result<()> {
         // first write to cur file
         // TODO if file almost full, then create new file, bump id
         let k = k.into();
-        let entry = self.persist(k.as_bytes(), v.into().as_bytes())?;
+        let v = v.into();
+        let entry = self.persist(&k, &v)?;
 
         // then write to im
         self.im_store.put(k, entry);
@@ -143,23 +145,23 @@ impl SotraDB {
     }
 
     /// deletes the given key
-    pub fn del<S: Into<String>>(&mut self, k: S) -> Result<bool> {
+    pub fn del(&mut self, k: impl AsRef<[u8]>) -> Result<bool> {
         // TODO if file almost full, then create new file, bump id
-        let k = k.into();
-        let k_exists = self.im_store.has_key(&k);
+        let k = k.as_ref();
+        let k_exists = self.im_store.has_key(k);
         if k_exists {
             // mark entry as deleted
-            let _entry = self.persist(k.as_bytes(), b"TOMBSTONE")?;
+            let _entry = self.persist(&k, b"TOMBSTONE")?;
 
             // then del from im
-            self.im_store.del(&k);
+            self.im_store.del(k);
         }
 
         Ok(k_exists)
     }
 
     /// lists all the keys in the store
-    pub fn list_all(&self) -> Option<Vec<String>> {
+    pub fn list_all(&self) -> Option<Vec<Bytes>> {
         self.im_store.keys()
     }
 
