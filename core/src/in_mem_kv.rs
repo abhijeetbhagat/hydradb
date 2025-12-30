@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -23,7 +24,7 @@ impl InMemEntry {
 //TODO: concurrency required
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct InMemKVStore {
-    kv_store: HashMap<String, InMemEntry>,
+    kv_store: HashMap<Bytes, InMemEntry>,
 }
 
 impl InMemKVStore {
@@ -35,27 +36,27 @@ impl InMemKVStore {
     }
 
     /// puts the key-value pair in the store
-    pub fn put(&mut self, k: String, v: InMemEntry) {
-        self.kv_store.insert(k, v);
+    pub fn put(&mut self, k: impl Into<Bytes>, v: InMemEntry) {
+        self.kv_store.insert(k.into(), v);
     }
 
     /// gets the value for given key `k`
-    pub fn get(&self, k: &str) -> Option<InMemEntry> {
-        self.kv_store.get(k).cloned()
+    pub fn get(&self, k: impl AsRef<[u8]>) -> Option<InMemEntry> {
+        self.kv_store.get(k.as_ref()).cloned()
     }
 
     /// deletes the given key `k`
-    pub fn del(&mut self, k: &str) {
-        self.kv_store.remove(k);
+    pub fn del(&mut self, k: impl AsRef<[u8]>) {
+        self.kv_store.remove(k.as_ref());
     }
 
     /// checks if the given key `k` is present
-    pub fn has_key(&self, k: &str) -> bool {
-        self.kv_store.contains_key(k)
+    pub fn has_key(&self, k: impl AsRef<[u8]>) -> bool {
+        self.kv_store.contains_key(k.as_ref())
     }
 
     /// returns all the keys in the in-mem store
-    pub fn keys(&self) -> Option<Vec<String>> {
+    pub fn keys(&self) -> Option<Vec<Bytes>> {
         if self.kv_store.is_empty() {
             None
         } else {
@@ -67,6 +68,10 @@ impl InMemKVStore {
     pub fn len(&self) -> usize {
         self.kv_store.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.kv_store.len() == 0
+    }
 }
 
 #[cfg(test)]
@@ -76,19 +81,19 @@ mod tests {
     #[test]
     fn put_test() {
         let mut store = InMemKVStore::new();
-        store.put("abhi".to_owned(), InMemEntry::new(1, 5, 1, 0));
-        store.put("pads".to_owned(), InMemEntry::new(1, 9, 2, 0));
-        store.put("ashu".to_owned(), InMemEntry::new(1, 5, 3, 0));
+        store.put("abhi", InMemEntry::new(1, 5, 1, 0));
+        store.put("pads", InMemEntry::new(1, 9, 2, 0));
+        store.put("ashu", InMemEntry::new(1, 5, 3, 0));
         assert_eq!(store.len(), 3);
     }
 
     #[test]
     fn del_test() {
         let mut store = InMemKVStore::new();
-        store.put("abhi".to_owned(), InMemEntry::new(1, 5, 1, 0));
-        store.put("pads".to_owned(), InMemEntry::new(1, 9, 2, 0));
+        store.put("abhi", InMemEntry::new(1, 5, 1, 0));
+        store.put("pads", InMemEntry::new(1, 9, 2, 0));
         store.del("abhi");
-        store.put("ashu".to_owned(), InMemEntry::new(1, 5, 3, 0));
+        store.put("ashu", InMemEntry::new(1, 5, 3, 0));
         assert_eq!(store.len(), 2);
     }
 }

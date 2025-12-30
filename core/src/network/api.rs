@@ -36,9 +36,9 @@ pub async fn read(app: Data<App>, req: Json<String>) -> actix_web::Result<impl R
     let value = state_machine.data.get(&key);
     tracing::info!("val {:?}", value);
     if let Ok(Some(value)) = value {
-        Ok(Json(value))
+        Ok(Json(str::from_utf8(&value).unwrap().to_string()))
     } else {
-        Ok(Json("not found".to_string()))
+        Ok(Json("not found".to_owned()))
     }
 }
 
@@ -55,11 +55,11 @@ pub async fn consistent_read(
             let key = req.0;
             let value = state_machine.data.get(&key);
             if let Ok(Some(value)) = value {
-                return Ok(Json(value));
+                Ok(Json(str::from_utf8(&value).unwrap().to_string()))
             } else {
-                return Ok(Json("not found".to_string()));
+                Ok(Json("not found".to_string()))
             }
         }
-        Err(e) => Ok(Json("not found".to_string())),
+        Err(_) => Ok(Json("not found".to_string())),
     }
 }
