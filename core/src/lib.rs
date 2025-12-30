@@ -4,6 +4,7 @@ pub mod log_store;
 pub mod network;
 pub mod sotradb;
 pub mod utils;
+pub mod merger;
 
 use actix_web::middleware;
 use actix_web::middleware::Logger;

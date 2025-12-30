@@ -19,6 +19,7 @@ use crate::typ;
 use crate::NodeId;
 use crate::TypeConfig;
 
+/// Makes outbound calls to the raft api
 pub struct Network {}
 
 impl Network {
