@@ -18,6 +18,9 @@ use std::{
 #[cfg(not(test))]
 const MAX_FILE_SIZE_THRESHOLD: u64 = 1048576;
 
+#[cfg(test)]
+const MAX_FILE_SIZE_THRESHOLD: u64 = 60;
+
 /// returns a raw db entry to persist from the given data
 fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
     let mut o = Vec::with_capacity(4 + 4 + k.len() + v.len());
@@ -206,8 +209,6 @@ mod tests {
     use std::fs;
 
     use crate::sotradb::SotraDB;
-
-    const MAX_FILE_SIZE_THRESHOLD: u64 = 60;
 
     #[test]
     fn test_del() {
