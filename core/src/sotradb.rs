@@ -1,26 +1,25 @@
 use crate::in_mem_kv::{InMemEntry, InMemKVStore};
+use crate::merger::*;
 use crate::utils::calc_crc;
 use anyhow::Result;
+use bytes::Bytes;
 use core::str;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
+use std::path::Path;
 use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use serde::{Serialize, Deserialize};
-use bytes::Bytes;
 
-struct DBEntry {
-    crc: u32,
-    tstamp: u32,
-    ksz: u32,
-    vsz: u32,
-    key: Vec<u8>,
-    val: Vec<u8>,
-}
+#[cfg(not(test))]
+const MAX_FILE_SIZE_THRESHOLD: usize = 1048576;
+
+#[cfg(test)]
+const MAX_FILE_SIZE_THRESHOLD: usize = 60;
 
 /// returns a raw db entry to persist from the given data
 fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
@@ -43,6 +42,7 @@ pub struct SotraDB {
     cur_cask: String, // dir name of the cur_cask
     cur_id: usize,    // needs to be atomic
     im_store: InMemKVStore,
+    cur_file_size: u64,
 }
 
 impl SotraDB {
@@ -50,56 +50,57 @@ impl SotraDB {
     pub fn new<T: Into<String> + Debug>(namespace: T) -> Result<Self> {
         let namespace = namespace.into();
 
+        let mut cur_id = 0;
         if !fs::exists(format!("./{namespace}"))? {
             let dir_builder = DirBuilder::new();
             dir_builder.create(format!("./{}", &namespace))?;
+        } else {
+            let mut mx = 0;
+            for entry in fs::read_dir(format!("./{}", &namespace))? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(path) = path.file_name() {
+                        if let Some(path) = path.to_str() {
+                            mx = std::cmp::max(mx, path.parse::<usize>()?)
+                        }
+                    }
+                }
+            }
+            cur_id = mx;
         }
+
+        let cur_file_size = fs::metadata(format!("./{namespace}/{cur_id}"))?.len();
 
         let mut db = Self {
             cur_cask: namespace,
-            cur_id: 0,
+            cur_id,
             im_store: InMemKVStore::new(),
+            cur_file_size,
         };
 
-        db.restore();
+        db.build_key_dir()?;
 
         Ok(db)
     }
 
+    fn get_active_file(&self) -> usize {
+        self.cur_id
+    }
+
     /// builds the in-mem store by scanning the data files
-    fn restore(&mut self) -> Result<()> {
+    fn build_key_dir(&mut self) -> Result<()> {
         // TODO check for hint file later
-        let file = File::options()
-            .read(true)
-            .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
+        let path;
+        let restorer: Box<dyn Restore> = if Path::new(&format!("{}/hint", self.cur_cask)).exists() {
+            path = format!("{}/{}", self.cur_cask, "hint");
+            Box::new(HintFileRestore)
+        } else {
+            path = format!("{}/{}", self.cur_cask, self.cur_id);
+            Box::new(DataFileRestore)
+        };
 
-        let mut reader = BufReader::new(file);
-        let mut buf = [0; 4 + 4 + 4 + 4]; // 4 crc + 4 tstamp + 4 ksz + 4 vsz
-        let mut i = 4;
-        let mut j = 7;
-
-        while let Ok(size) = reader.read(&mut buf) && size != 0 {
-            let tstamp = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
-            i = j + 1;
-            j += 4;
-            let ksz = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
-            i = j + 1;
-            j += 4;
-            let vsz = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
-            // read key using ksz, val using vsz
-            let mut key = vec![0; ksz as usize];
-            reader.read(&mut key)?;
-            let val_pos = reader.stream_position().unwrap();
-            let mut val = vec![0; vsz as usize];
-            reader.read(&mut val)?;
-
-            let entry = InMemEntry::new(self.cur_id, vsz, val_pos as usize, tstamp);
-            self.im_store.put(String::from_utf8(key).unwrap(), entry);
-            i = 4;
-            j = 7;
-        }
-
-        Ok(())
+        restorer.restore(&path, &mut self.im_store)
     }
 
     /// gets the value, if present, for the given key `k`
@@ -268,5 +269,11 @@ mod tests {
         assert_eq!(keys.len(), 6);
 
         let _ = fs::remove_dir_all("./names-to-addresses");
+    }
+
+    #[test]
+    fn test_active_file() {
+        let db = SotraDB::new("active_file_test").unwrap();
+        assert_eq!(db.get_active_file(), 2)
     }
 }

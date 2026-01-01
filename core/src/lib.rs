@@ -1,10 +1,10 @@
 pub mod app;
 pub mod in_mem_kv;
 pub mod log_store;
+pub mod merger;
 pub mod network;
 pub mod sotradb;
 pub mod utils;
-pub mod merger;
 
 use actix_web::middleware;
 use actix_web::middleware::Logger;
@@ -221,7 +221,15 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                 EntryPayload::Blank => res.push(Response::Blank { value: None }),
                 EntryPayload::Normal(ref req) => match req {
                     Request::Put { key, value } => {
-                        sm.data.put(key.clone(), value.clone());
+                        sm.data
+                            .put(key.clone(), value.clone())
+                            .map_err(|e| StorageError::IO {
+                                source: StorageIOError::new(
+                                    ErrorSubject::Store,
+                                    ErrorVerb::Write,
+                                    &io::Error::new(io::ErrorKind::Other, e),
+                                ),
+                            })?;
                         res.push(Response::Put {
                             prev_value: Some(value.clone()),
                         })
