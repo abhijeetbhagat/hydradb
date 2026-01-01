@@ -16,10 +16,10 @@ use std::{
 };
 
 #[cfg(not(test))]
-const MAX_FILE_SIZE_THRESHOLD: usize = 1048576;
+const MAX_FILE_SIZE_THRESHOLD: u64 = 1048576;
 
 #[cfg(test)]
-const MAX_FILE_SIZE_THRESHOLD: usize = 60;
+const MAX_FILE_SIZE_THRESHOLD: u64 = 60;
 
 /// returns a raw db entry to persist from the given data
 fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
@@ -50,10 +50,14 @@ impl SotraDB {
     pub fn new<T: Into<String> + Debug>(namespace: T) -> Result<Self> {
         let namespace = namespace.into();
 
-        let mut cur_id = 0;
+        let cur_id;
+        let cur_file_size;
+
         if !fs::exists(format!("./{namespace}"))? {
             let dir_builder = DirBuilder::new();
             dir_builder.create(format!("./{}", &namespace))?;
+            cur_id = 0;
+            cur_file_size = 0;
         } else {
             let mut mx = 0;
             for entry in fs::read_dir(format!("./{}", &namespace))? {
@@ -67,10 +71,16 @@ impl SotraDB {
                     }
                 }
             }
-            cur_id = mx;
-        }
 
-        let cur_file_size = fs::metadata(format!("./{namespace}/{cur_id}"))?.len();
+            cur_id = mx;
+
+            let path = format!("./{namespace}/{cur_id}");
+            cur_file_size = if Path::new(&path).exists() {
+                fs::metadata(path)?.len()
+            } else {
+                0
+            };
+        }
 
         let mut db = Self {
             cur_cask: namespace,
@@ -79,7 +89,7 @@ impl SotraDB {
             cur_file_size,
         };
 
-        db.build_key_dir()?;
+        let _ = db.build_key_dir();
 
         Ok(db)
     }
@@ -107,7 +117,7 @@ impl SotraDB {
     pub fn get(&self, k: impl AsRef<[u8]>) -> Result<Option<Bytes>> {
         if let Some(in_mem_entry) = self.im_store.get(k) {
             let InMemEntry {
-                file_id: _,
+                file_id,
                 val_sz,
                 val_pos,
                 tstamp: _,
@@ -116,7 +126,7 @@ impl SotraDB {
 
             let mut file = File::options()
                 .read(true)
-                .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
+                .open(format!("./{}/{}", self.cur_cask, file_id))?;
             file.seek(SeekFrom::Current(val_pos as i64))?;
             // println!("file pos is {}", file.stream_pos);
 
@@ -137,7 +147,16 @@ impl SotraDB {
         // TODO if file almost full, then create new file, bump id
         let k = k.into();
         let v = v.into();
+
+        if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size) > MAX_FILE_SIZE_THRESHOLD
+        {
+            self.cur_id += 1;
+        }
+
         let entry = self.persist(&k, &v)?;
+        println!("entry inserted: {:?}", entry);
+
+        self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
 
         // then write to im
         self.im_store.put(k, entry);
@@ -152,7 +171,7 @@ impl SotraDB {
         let k_exists = self.im_store.has_key(k);
         if k_exists {
             // mark entry as deleted
-            let _entry = self.persist(&k, b"TOMBSTONE")?;
+            let _entry = self.persist(k, b"TOMBSTONE")?;
 
             // then del from im
             self.im_store.del(k);
@@ -275,5 +294,19 @@ mod tests {
     fn test_active_file() {
         let db = SotraDB::new("active_file_test").unwrap();
         assert_eq!(db.get_active_file(), 2)
+    }
+
+    #[test]
+    fn test_split_file() {
+        let mut db = SotraDB::new("split_test").unwrap();
+        db.put("abhi", "rust").unwrap();
+        db.put("pads", "java").unwrap();
+        db.put("swap", ".net").unwrap();
+        let val = db.get("abhi");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert_eq!(val, Some("rust".into()));
+        assert_eq!(db.get_active_file(), 1);
+        let _ = fs::remove_dir_all("./split_test");
     }
 }
