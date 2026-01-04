@@ -6,12 +6,12 @@ use std::collections::HashMap;
 pub struct InMemEntry {
     pub file_id: usize,
     pub val_sz: u32,
-    pub val_pos: usize,
+    pub val_pos: u64,
     pub tstamp: u32,
 }
 
 impl InMemEntry {
-    pub fn new(file_id: usize, val_sz: u32, val_pos: usize, tstamp: u32) -> Self {
+    pub fn new(file_id: usize, val_sz: u32, val_pos: u64, tstamp: u32) -> Self {
         Self {
             file_id,
             val_sz,

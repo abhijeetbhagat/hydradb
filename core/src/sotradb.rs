@@ -24,7 +24,9 @@ const MAX_FILE_SIZE_THRESHOLD: u64 = 60;
 /// returns a raw db entry to persist from the given data
 #[inline]
 fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
-    let mut o = Vec::with_capacity(4 + 4 + k.len() + v.len());
+    // crc + tstamp + ksz + vsz + key + val
+    let mut o = Vec::with_capacity(4 + 4 + 4 + 4 + k.len() + v.len());
+
     let kl = k.len() as u32;
     let vl = v.len() as u32;
 
@@ -34,6 +36,22 @@ fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
     o.extend_from_slice(&vl.to_be_bytes());
     o.extend_from_slice(k);
     o.extend_from_slice(v);
+    o
+}
+
+#[inline]
+fn to_hint_entry(tstamp: u32, k: &[u8], v: &[u8], val_pos: u64) -> Vec<u8> {
+    // tstamp + ksz + vsz + val_pos + key
+    let mut o = Vec::with_capacity(4 + 4 + 4 + 8 + k.len());
+
+    let kl = k.len() as u32;
+    let vl = v.len() as u32;
+
+    o.extend_from_slice(&tstamp.to_be_bytes());
+    o.extend_from_slice(&kl.to_be_bytes());
+    o.extend_from_slice(&vl.to_be_bytes());
+    o.extend_from_slice(&val_pos.to_be_bytes());
+    o.extend_from_slice(k);
     o
 }
 
@@ -128,6 +146,7 @@ impl SotraDB {
             let mut file = File::options()
                 .read(true)
                 .open(format!("./{}/{}", self.cur_cask, file_id))?;
+
             file.seek(SeekFrom::Current(val_pos as i64))?;
             // println!("file pos is {}", file.stream_pos);
 
@@ -188,7 +207,9 @@ impl SotraDB {
         // it shoudn't modify/delete any old files until the hint file is completed.
         // it shouldn't modify/delete the active file.
         // it should refer to the current keydir when building the hint file.
-        
+        //
+        //
+
         // no merging if no old files
         if self.cur_id == 0 {
             return Ok(());
@@ -214,8 +235,8 @@ impl SotraDB {
                 }
             })
             .collect();
-        
-        // sort them in increasing order starting with file lowest number 
+
+        // sort them in increasing order starting with file lowest number
         // (an already merged file may also exist)
         files.sort();
 
@@ -224,6 +245,12 @@ impl SotraDB {
             .create(true)
             .append(true)
             .open(format!("./{}/temp", self.cur_cask))?;
+
+        // open a temp file for storing merged data
+        let mut hint_file = File::options()
+            .create(true)
+            .append(true)
+            .open(format!("./{}/hint", self.cur_cask))?;
 
         // merge all files except the last one
         for file_id in &files[..files.len() - 1] {
@@ -237,7 +264,7 @@ impl SotraDB {
             let mut i = 0;
             let mut j = 4;
 
-            while let Ok(size) = reader.read(&mut buf) && size != 0 {
+            while reader.read_exact(&mut buf).is_ok() {
                 println!("buf read: {:?}", buf);
                 let crc = u32::from_be_bytes(buf[i..j].try_into().unwrap());
                 i = j;
@@ -251,11 +278,12 @@ impl SotraDB {
                 let vsz = u32::from_be_bytes(buf[i..j].try_into().unwrap());
                 // read key using ksz, val using vsz
                 let mut key = vec![0; ksz as usize];
-                reader.read(&mut key)?;
+                reader.read_exact(&mut key)?;
 
                 let val_pos = reader.stream_position().unwrap();
+
                 let mut val = vec![0; vsz as usize];
-                reader.read(&mut val)?;
+                reader.read_exact(&mut val)?;
 
                 if let Some(entry) = self.im_store.get(&key) {
                     // key present in keydir
@@ -265,12 +293,14 @@ impl SotraDB {
                     if entry.file_id == *file_id && entry.val_pos as u64 == val_pos {
                         let entry = to_db_entry(crc, tstamp, &key, &val);
                         let _ = temp_file.write_all(&entry);
+
+                        let entry = to_hint_entry(tstamp, &key, &val, val_pos);
+                        let _ = hint_file.write_all(&entry);
                     } else {
                         // key could be present in the active file or a newer old file getting
                         // processed in future iterations of this loop.
                         // so do nothing.
                     }
-
                 } else {
                     // key deleted so skip processing it
                 }
@@ -278,7 +308,6 @@ impl SotraDB {
                 i = 0;
                 j = 4;
             }
-
         }
 
         // todo rename the temp file to cur_id - 1
@@ -298,7 +327,7 @@ impl SotraDB {
             .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
         let file_id = self.cur_id;
         let ksz = k.len() as u32;
-        let val_pos = file.seek(SeekFrom::End(0))? as usize + 4 + 4 + 4 + 4 + ksz as usize;
+        let val_pos = file.seek(SeekFrom::End(0))? + 4 + 4 + 4 + 4 + ksz as u64;
         let vsz = v.len() as u32;
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
         let crc = calc_crc(tstamp, ksz, vsz, k, v);
@@ -437,7 +466,6 @@ mod tests {
 
         db.merge();
 
-        
         let _ = fs::remove_dir_all("./merge_test");
     }
 }

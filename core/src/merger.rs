@@ -38,7 +38,7 @@ impl Restore for DataFileRestore {
             let mut val = vec![0; vsz as usize];
             reader.read(&mut val)?;
 
-            let entry = InMemEntry::new(cur_id, vsz, val_pos as usize, tstamp);
+            let entry = InMemEntry::new(cur_id, vsz, val_pos, tstamp);
             im_store.put(String::from_utf8(key).unwrap(), entry);
             i = 4;
             j = 7;
@@ -60,7 +60,7 @@ impl Restore for HintFileRestore {
             .open(file)?;
 
         let mut reader = BufReader::new(file);
-        let mut buf = [0; 4 + 4 + 4 + 4]; // 4 tstamp + 4 ksz + 4 vsz + 4 val_pos
+        let mut buf = [0; 4 + 4 + 4 + 8]; // 4 tstamp + 4 ksz + 4 vsz + 8 val_pos
         let mut i = 0; // start reading from the beginning of the hint file
         let mut j = 3;
 
@@ -73,13 +73,13 @@ impl Restore for HintFileRestore {
             j += 4;
             let vsz = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
             i = j + 1;
-            j += 4;
-            let val_pos = u32::from_be_bytes(buf[i..=j].try_into().unwrap());
+            j += 8;
+            let val_pos = u64::from_be_bytes(buf[i..=j].try_into().unwrap());
 
             let mut key = vec![0; ksz as usize];
             reader.read(&mut key)?;
 
-            let entry = InMemEntry::new(cur_id, vsz, val_pos as usize, tstamp);
+            let entry = InMemEntry::new(cur_id, vsz, val_pos, tstamp);
             im_store.put(String::from_utf8(key).unwrap(), entry);
             i = 0;
             j = 3;
