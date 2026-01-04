@@ -14,7 +14,6 @@ impl Restore for DataFileRestore {
     fn restore(&self, file: &str, im_store: &mut InMemKVStore) -> Result<()> {
         let cur_id = 0; 
 
-        // TODO check for hint file later
         let file = File::options()
             .read(true)
             .open(file)?;

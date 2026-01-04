@@ -7,7 +7,7 @@ use core::str;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::{
@@ -22,6 +22,7 @@ const MAX_FILE_SIZE_THRESHOLD: u64 = 1048576;
 const MAX_FILE_SIZE_THRESHOLD: u64 = 60;
 
 /// returns a raw db entry to persist from the given data
+#[inline]
 fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
     let mut o = Vec::with_capacity(4 + 4 + k.len() + v.len());
     let kl = k.len() as u32;
@@ -151,6 +152,7 @@ impl SotraDB {
         if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size) > MAX_FILE_SIZE_THRESHOLD
         {
             self.cur_id += 1;
+            self.cur_file_size = 0;
         }
 
         let entry = self.persist(&k, &v)?;
@@ -178,6 +180,110 @@ impl SotraDB {
         }
 
         Ok(k_exists)
+    }
+
+    /// merges old files into a single file & generates a hint file
+    pub fn merge(&mut self) -> Result<()> {
+        // the goal of merge is to create a hint file.
+        // it shoudn't modify/delete any old files until the hint file is completed.
+        // it shouldn't modify/delete the active file.
+        // it should refer to the current keydir when building the hint file.
+        
+        // no merging if no old files
+        if self.cur_id == 0 {
+            return Ok(());
+        }
+
+        // get all the files in the current cask
+        let mut files: Vec<usize> = fs::read_dir(format!("./{}", &self.cur_cask))?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(path) = path.file_name() {
+                        if let Some(path) = path.to_str() {
+                            path.parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // sort them in increasing order starting with file lowest number 
+        // (an already merged file may also exist)
+        files.sort();
+
+        // open a temp file for storing merged data
+        let mut temp_file = File::options()
+            .create(true)
+            .append(true)
+            .open(format!("./{}/temp", self.cur_cask))?;
+
+        // merge all files except the last one
+        for file_id in &files[..files.len() - 1] {
+            let file = File::options()
+                .read(true)
+                .open(format!("./{}/{}", self.cur_cask, file_id))?;
+            println!("reading from file ./{}/{}", self.cur_cask, file_id);
+
+            let mut reader = BufReader::new(file);
+            let mut buf = [0; 4 + 4 + 4 + 4]; // 4 crc + 4 tstamp + 4 ksz + 4 vsz
+            let mut i = 0;
+            let mut j = 4;
+
+            while let Ok(size) = reader.read(&mut buf) && size != 0 {
+                println!("buf read: {:?}", buf);
+                let crc = u32::from_be_bytes(buf[i..j].try_into().unwrap());
+                i = j;
+                j += 4;
+                let tstamp = u32::from_be_bytes(buf[i..j].try_into().unwrap());
+                i = j;
+                j += 4;
+                let ksz = u32::from_be_bytes(buf[i..j].try_into().unwrap());
+                i = j;
+                j += 4;
+                let vsz = u32::from_be_bytes(buf[i..j].try_into().unwrap());
+                // read key using ksz, val using vsz
+                let mut key = vec![0; ksz as usize];
+                reader.read(&mut key)?;
+
+                let val_pos = reader.stream_position().unwrap();
+                let mut val = vec![0; vsz as usize];
+                reader.read(&mut val)?;
+
+                if let Some(entry) = self.im_store.get(&key) {
+                    // key present in keydir
+
+                    // check if the current old file has the valid record verified by presence of
+                    // entry in the keydir
+                    if entry.file_id == *file_id && entry.val_pos as u64 == val_pos {
+                        let entry = to_db_entry(crc, tstamp, &key, &val);
+                        let _ = temp_file.write_all(&entry);
+                    } else {
+                        // key could be present in the active file or a newer old file getting
+                        // processed in future iterations of this loop.
+                        // so do nothing.
+                    }
+
+                } else {
+                    // key deleted so skip processing it
+                }
+
+                i = 0;
+                j = 4;
+            }
+
+        }
+
+        // todo rename the temp file to cur_id - 1
+
+        Ok(())
     }
 
     /// lists all the keys in the store
@@ -311,5 +417,27 @@ mod tests {
         let val = val.unwrap();
         assert_eq!(val, Some("rust".into()));
         let _ = fs::remove_dir_all("./split_test");
+    }
+
+    #[test]
+    fn test_merge() {
+        let mut db = SotraDB::new("merge_test").unwrap();
+        db.put("abhi", "rust").unwrap();
+        db.put("pads", "java").unwrap();
+        assert_eq!(db.get_active_file(), 0);
+
+        db.put("swap", ".net").unwrap();
+        db.put("pooj", "pyth").unwrap();
+        assert_eq!(db.get_active_file(), 1);
+
+        let val = db.get("abhi");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert_eq!(val, Some("rust".into()));
+
+        db.merge();
+
+        
+        let _ = fs::remove_dir_all("./merge_test");
     }
 }

@@ -42,6 +42,14 @@ pub async fn read(app: Data<App>, req: Json<String>) -> actix_web::Result<impl R
     }
 }
 
+#[post("/merge")]
+pub async fn merge(app: Data<App>, req: Json<String>) -> actix_web::Result<impl Responder> {
+    // todo run merge on state_machine
+    let mut state_machine = app.state_machine_store.state_machine.write().await;
+    state_machine.data.merge();
+    Ok(Json("done".to_owned()))
+}
+
 #[post("/consistent_read")]
 pub async fn consistent_read(
     app: Data<App>,

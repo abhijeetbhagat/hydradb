@@ -140,6 +140,7 @@ pub struct StateMachineStore {
 impl StateMachineStore {
     pub fn new(namespace: String) -> anyhow::Result<Self> {
         Ok(Self {
+            // one writer at a time to the db
             state_machine: RwLock::new(StateMachineData::new(namespace)?),
             ..Default::default()
         })
