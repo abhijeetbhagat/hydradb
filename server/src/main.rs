@@ -1,4 +1,4 @@
-use core::start_example_raft_node;
+use core::start_raft_node;
 use log::info;
 
 use anyhow::Result;
@@ -27,5 +27,5 @@ async fn main() -> Result<()> {
         args.id, args.port
     );
 
-    start_example_raft_node(args.id, args.port, args.namespace).await
+    start_raft_node(args.id, args.port, args.namespace).await
 }

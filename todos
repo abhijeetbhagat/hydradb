@@ -1,1 +1,4 @@
-- optimize allocations in to_db_entry, to_hint_entry functions
+[ ] impl iterators for hint, data files
+[ ] implement merging active file data & hint file data
+[ ] optimize allocations in to_db_entry, to_hint_entry functions
+[ ] post merge, delete old files & update keydir 

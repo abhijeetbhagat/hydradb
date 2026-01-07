@@ -1,8 +1,10 @@
 pub mod app;
-pub mod in_mem_kv;
+pub mod data_file_iter;
+pub mod hint_file_iter;
+pub mod key_dir;
 pub mod log_store;
-pub mod merger;
 pub mod network;
+pub mod restore;
 pub mod sotradb;
 pub mod utils;
 
@@ -319,11 +321,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
     }
 }
 
-pub async fn start_example_raft_node(
-    node_id: NodeId,
-    port: u16,
-    namespace: String,
-) -> anyhow::Result<()> {
+pub async fn start_raft_node(node_id: NodeId, port: u16, namespace: String) -> anyhow::Result<()> {
     // Create a configuration for the raft instance.
     let config = Config {
         heartbeat_interval: 500,

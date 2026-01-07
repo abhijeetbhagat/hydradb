@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
-pub struct InMemEntry {
+pub struct KeyDirEntry {
     pub file_id: usize,
     pub val_sz: u32,
     pub val_pos: u64,
     pub tstamp: u32,
 }
 
-impl InMemEntry {
+impl KeyDirEntry {
     pub fn new(file_id: usize, val_sz: u32, val_pos: u64, tstamp: u32) -> Self {
         Self {
             file_id,
@@ -23,11 +23,11 @@ impl InMemEntry {
 
 //TODO: concurrency required
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
-pub struct InMemKVStore {
-    kv_store: HashMap<Bytes, InMemEntry>,
+pub struct KeyDir {
+    kv_store: HashMap<Bytes, KeyDirEntry>,
 }
 
-impl InMemKVStore {
+impl KeyDir {
     /// constructs a new in-mem store
     pub fn new() -> Self {
         Self {
@@ -36,12 +36,12 @@ impl InMemKVStore {
     }
 
     /// puts the key-value pair in the store
-    pub fn put(&mut self, k: impl Into<Bytes>, v: InMemEntry) {
+    pub fn put(&mut self, k: impl Into<Bytes>, v: KeyDirEntry) {
         self.kv_store.insert(k.into(), v);
     }
 
     /// gets the value for given key `k`
-    pub fn get(&self, k: impl AsRef<[u8]>) -> Option<InMemEntry> {
+    pub fn get(&self, k: impl AsRef<[u8]>) -> Option<KeyDirEntry> {
         self.kv_store.get(k.as_ref()).cloned()
     }
 
@@ -76,24 +76,24 @@ impl InMemKVStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{InMemEntry, InMemKVStore};
+    use super::{KeyDir, KeyDirEntry};
 
     #[test]
     fn put_test() {
-        let mut store = InMemKVStore::new();
-        store.put("abhi", InMemEntry::new(1, 5, 1, 0));
-        store.put("pads", InMemEntry::new(1, 9, 2, 0));
-        store.put("ashu", InMemEntry::new(1, 5, 3, 0));
+        let mut store = KeyDir::new();
+        store.put("abhi", KeyDirEntry::new(1, 5, 1, 0));
+        store.put("pads", KeyDirEntry::new(1, 9, 2, 0));
+        store.put("ashu", KeyDirEntry::new(1, 5, 3, 0));
         assert_eq!(store.len(), 3);
     }
 
     #[test]
     fn del_test() {
-        let mut store = InMemKVStore::new();
-        store.put("abhi", InMemEntry::new(1, 5, 1, 0));
-        store.put("pads", InMemEntry::new(1, 9, 2, 0));
+        let mut store = KeyDir::new();
+        store.put("abhi", KeyDirEntry::new(1, 5, 1, 0));
+        store.put("pads", KeyDirEntry::new(1, 9, 2, 0));
         store.del("abhi");
-        store.put("ashu", InMemEntry::new(1, 5, 3, 0));
+        store.put("ashu", KeyDirEntry::new(1, 5, 3, 0));
         assert_eq!(store.len(), 2);
     }
 }

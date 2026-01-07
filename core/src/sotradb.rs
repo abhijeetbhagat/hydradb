@@ -1,5 +1,5 @@
-use crate::in_mem_kv::{InMemEntry, InMemKVStore};
-use crate::merger::*;
+use crate::key_dir::{KeyDirEntry, KeyDir};
+use crate::restore::*;
 use crate::utils::calc_crc;
 use anyhow::Result;
 use bytes::Bytes;
@@ -60,7 +60,7 @@ fn to_hint_entry(tstamp: u32, k: &[u8], v: &[u8], val_pos: u64) -> Vec<u8> {
 pub struct SotraDB {
     cur_cask: String, // dir name of the cur_cask
     cur_id: usize,    // needs to be atomic
-    im_store: InMemKVStore,
+    key_dir: KeyDir,
     cur_file_size: u64,
 }
 
@@ -82,12 +82,8 @@ impl SotraDB {
             for entry in fs::read_dir(format!("./{}", &namespace))? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_file() {
-                    if let Some(path) = path.file_name() {
-                        if let Some(path) = path.to_str() {
-                            mx = std::cmp::max(mx, path.parse::<usize>()?)
-                        }
-                    }
+                if path.is_file() && let Some(path) = path.file_name() && let Some(path) = path.to_str() {
+                    mx = std::cmp::max(mx, path.parse::<usize>()?)
                 }
             }
 
@@ -104,7 +100,7 @@ impl SotraDB {
         let mut db = Self {
             cur_cask: namespace,
             cur_id,
-            im_store: InMemKVStore::new(),
+            key_dir: KeyDir::new(),
             cur_file_size,
         };
 
@@ -129,13 +125,13 @@ impl SotraDB {
             Box::new(DataFileRestore)
         };
 
-        restorer.restore(&path, &mut self.im_store)
+        restorer.restore("./", &self.cur_cask, self.cur_id, &mut self.key_dir)
     }
 
     /// gets the value, if present, for the given key `k`
     pub fn get(&self, k: impl AsRef<[u8]>) -> Result<Option<Bytes>> {
-        if let Some(in_mem_entry) = self.im_store.get(k) {
-            let InMemEntry {
+        if let Some(in_mem_entry) = self.key_dir.get(k) {
+            let KeyDirEntry {
                 file_id,
                 val_sz,
                 val_pos,
@@ -180,7 +176,7 @@ impl SotraDB {
         self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
 
         // then write to im
-        self.im_store.put(k, entry);
+        self.key_dir.put(k, entry);
 
         Ok(())
     }
@@ -189,13 +185,13 @@ impl SotraDB {
     pub fn del(&mut self, k: impl AsRef<[u8]>) -> Result<bool> {
         // TODO if file almost full, then create new file, bump id
         let k = k.as_ref();
-        let k_exists = self.im_store.has_key(k);
+        let k_exists = self.key_dir.has_key(k);
         if k_exists {
             // mark entry as deleted
             let _entry = self.persist(k, b"TOMBSTONE")?;
 
             // then del from im
-            self.im_store.del(k);
+            self.key_dir.del(k);
         }
 
         Ok(k_exists)
@@ -285,7 +281,7 @@ impl SotraDB {
                 let mut val = vec![0; vsz as usize];
                 reader.read_exact(&mut val)?;
 
-                if let Some(entry) = self.im_store.get(&key) {
+                if let Some(entry) = self.key_dir.get(&key) {
                     // key present in keydir
 
                     // check if the current old file has the valid record verified by presence of
@@ -317,10 +313,10 @@ impl SotraDB {
 
     /// lists all the keys in the store
     pub fn list_all(&self) -> Option<Vec<Bytes>> {
-        self.im_store.keys()
+        self.key_dir.keys()
     }
 
-    fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<InMemEntry> {
+    fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
         let mut file = File::options()
             .create(true)
             .append(true)
@@ -335,7 +331,7 @@ impl SotraDB {
         let entry = to_db_entry(crc, tstamp, k, v);
         let _ = file.write_all(&entry);
 
-        Ok(InMemEntry::new(file_id, vsz, val_pos, tstamp))
+        Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
     }
 }
 
@@ -352,7 +348,7 @@ mod tests {
         db.put("abhi", "baner").unwrap();
         db.del("pooja").unwrap();
 
-        assert_eq!(db.im_store.len(), 1);
+        assert_eq!(db.key_dir.len(), 1);
 
         let _ = fs::remove_dir_all("./del");
     }
@@ -367,8 +363,8 @@ mod tests {
         db.put("swap", "usa").unwrap();
         db.put("jane", "mk").unwrap();
 
-        assert_eq!(db.im_store.len(), 6);
-        let e = db.im_store.get("pooja").unwrap();
+        assert_eq!(db.key_dir.len(), 6);
+        let e = db.key_dir.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
         assert_eq!(e.val_pos, 21);
 
@@ -388,17 +384,17 @@ mod tests {
     #[test]
     fn test_restore() {
         let db = SotraDB::new("test").unwrap();
-        assert_eq!(db.im_store.len(), 6);
-        let e = db.im_store.get("pooja").unwrap();
+        assert_eq!(db.key_dir.len(), 6);
+        let e = db.key_dir.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
         assert_eq!(e.val_pos, 21);
-        let e = db.im_store.get("abhi").unwrap();
+        let e = db.key_dir.get("abhi").unwrap();
         assert_eq!(e.file_id, 0);
         assert_eq!(e.val_pos, 53);
-        let e = db.im_store.get("pads").unwrap();
+        let e = db.key_dir.get("pads").unwrap();
         assert_eq!(e.file_id, 0);
         assert_eq!(e.val_pos, 78);
-        let e = db.im_store.get("jane").unwrap();
+        let e = db.key_dir.get("jane").unwrap();
         assert_eq!(e.file_id, 0);
         assert_eq!(e.val_pos, 155);
 
@@ -464,7 +460,36 @@ mod tests {
         let val = val.unwrap();
         assert_eq!(val, Some("rust".into()));
 
-        db.merge();
+        let result = db.merge();
+        assert!(result.is_ok());
+
+        let _ = fs::remove_dir_all("./merge_test");
+    }
+
+    #[test]
+    fn test_hint_file_restore() {
+        {
+            let mut db = SotraDB::new("merge_test").unwrap();
+            db.put("abhi", "rust").unwrap();
+            db.put("pads", "java").unwrap();
+            assert_eq!(db.get_active_file(), 0);
+
+            db.put("swap", ".net").unwrap();
+            db.put("pooj", "pyth").unwrap();
+            assert_eq!(db.get_active_file(), 1);
+
+            let val = db.get("abhi");
+            assert!(val.is_ok());
+            let val = val.unwrap();
+            assert_eq!(val, Some("rust".into()));
+
+            let result = db.merge();
+            assert!(result.is_ok());
+        }
+        // the keydir should be now gone
+
+        // restore from hint file
+        let mut db = SotraDB::new("merge_test").unwrap();
 
         let _ = fs::remove_dir_all("./merge_test");
     }
