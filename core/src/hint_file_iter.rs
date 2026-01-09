@@ -4,14 +4,14 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 /// iterates over a hint file
-struct HintFileIterator {
+pub struct HintFileIterator {
     file: File,
     path: PathBuf,
     buf: [u8; 20], // 4 crc + 4 tstamp + 4 vsz + 8 val_pos
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct HintFileEntry {
+pub struct HintFileEntry {
     pub tstamp: u32,
     pub ksz: u32,
     pub vsz: u32,
