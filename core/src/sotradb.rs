@@ -115,13 +115,9 @@ impl SotraDB {
 
     /// builds the in-mem store by scanning the data files
     fn build_key_dir(&mut self) -> Result<()> {
-        // TODO check for hint file later
-        let path;
         let restorer: Box<dyn Restore> = if Path::new(&format!("{}/hint", self.cur_cask)).exists() {
-            path = format!("{}/{}", self.cur_cask, "hint");
             Box::new(HintFileRestore)
         } else {
-            path = format!("{}/{}", self.cur_cask, self.cur_id);
             Box::new(DataFileRestore)
         };
 
@@ -489,7 +485,7 @@ mod tests {
         // the keydir should be now gone
 
         // restore from hint file
-        let mut db = SotraDB::new("merge_test").unwrap();
+        let _ = SotraDB::new("merge_test").unwrap();
 
         let _ = fs::remove_dir_all("./merge_test");
     }
