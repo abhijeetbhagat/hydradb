@@ -82,7 +82,12 @@ impl SotraDB {
             for entry in fs::read_dir(format!("./{}", &namespace))? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_file() && let Some(path) = path.file_name() && let Some(path) = path.to_str() {
+
+                if path.is_file() && 
+                let Some(path) = path.file_name() && 
+                let Some(path) = path.to_str() && 
+                path != "hint" && path != "temp" {
+                    println!("path is {path}");
                     mx = std::cmp::max(mx, path.parse::<usize>()?)
                 }
             }
@@ -465,7 +470,7 @@ mod tests {
     #[test]
     fn test_hint_file_restore() {
         {
-            let mut db = SotraDB::new("merge_test").unwrap();
+            let mut db = SotraDB::new("hint_file_restore_test").unwrap();
             db.put("abhi", "rust").unwrap();
             db.put("pads", "java").unwrap();
             assert_eq!(db.get_active_file(), 0);
@@ -485,8 +490,8 @@ mod tests {
         // the keydir should be now gone
 
         // restore from hint file
-        let _ = SotraDB::new("merge_test").unwrap();
+        let _ = SotraDB::new("hint_file_restore_test").unwrap();
 
-        let _ = fs::remove_dir_all("./merge_test");
+        let _ = fs::remove_dir_all("./hint_file_restore_test");
     }
 }
