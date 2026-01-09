@@ -25,19 +25,17 @@ impl Restore for DataFileRestore {
     ) -> Result<()> {
         let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{active_file_num}"))?;
 
-        for entry in file_iter {
-            if let Ok(DataFileEntry {
-                tstamp,
-                ksz: _ksz,
-                vsz,
-                key,
-                val: _val,
-                val_pos,
-            }) = entry
-            {
-                let key_dir_entry = KeyDirEntry::new(active_file_num, vsz, val_pos, tstamp);
-                key_dir.put(String::from_utf8(key).unwrap(), key_dir_entry);
-            }
+        for DataFileEntry {
+            tstamp,
+            ksz: _ksz,
+            vsz,
+            key,
+            val: _val,
+            val_pos,
+        } in file_iter.flatten()
+        {
+            let key_dir_entry = KeyDirEntry::new(active_file_num, vsz, val_pos, tstamp);
+            key_dir.put(String::from_utf8(key).unwrap(), key_dir_entry);
         }
 
         Ok(())
@@ -60,40 +58,37 @@ impl Restore for HintFileRestore {
         // 1. process hint file
         let iter = HintFileIterator::new(format!("{base_path}/{cask}/hint"))?;
 
-        for entry in iter {
-            if let Ok(HintFileEntry {
-                tstamp,
-                ksz,
-                vsz,
-                key,
-                val_pos,
-            }) = entry
-            {
-                let entry = KeyDirEntry::new(active_file_num - 1, vsz, val_pos, tstamp);
-                key_dir.put(String::from_utf8(key).unwrap(), entry);
-            }
+        for HintFileEntry {
+            tstamp,
+            ksz: _k,
+            vsz,
+            key,
+            val_pos,
+        } in iter.flatten()
+        {
+            let entry = KeyDirEntry::new(active_file_num - 1, vsz, val_pos, tstamp);
+            key_dir.put(String::from_utf8(key).unwrap(), entry);
         }
 
+        // 2. process data file
         let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{active_file_num}"))?;
 
-        for entry in file_iter {
-            if let Ok(DataFileEntry {
-                tstamp,
-                ksz: _ksz,
-                vsz,
-                key,
-                val,
-                val_pos,
-            }) = entry
-            {
-                // if entry is deleted, then we remove it from key_dir
-                if str::from_utf8(&val).unwrap() == "TOMBSTONE" {
-                    key_dir.del(&key);
-                } else {
-                    // we either insert a key that doesn't exist or overwrite it
-                    let entry = KeyDirEntry::new(active_file_num, vsz, val_pos, tstamp);
-                    key_dir.put(String::from_utf8(key).unwrap(), entry);
-                }
+        for DataFileEntry {
+            tstamp,
+            ksz: _ksz,
+            vsz,
+            key,
+            val,
+            val_pos,
+        } in file_iter.flatten()
+        {
+            // if entry is deleted, then we remove it from key_dir
+            if str::from_utf8(&val).unwrap() == "TOMBSTONE" {
+                key_dir.del(&key);
+            } else {
+                // we either insert a key that doesn't exist or overwrite it
+                let entry = KeyDirEntry::new(active_file_num, vsz, val_pos, tstamp);
+                key_dir.put(String::from_utf8(key).unwrap(), entry);
             }
         }
 
