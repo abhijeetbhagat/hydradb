@@ -1,17 +1,18 @@
 pub mod app;
 pub mod data_file_iter;
 pub mod hint_file_iter;
+pub mod hydradb;
 pub mod key_dir;
 pub mod log_store;
 pub mod network;
 pub mod restore;
-pub mod sotradb;
 pub mod utils;
 
 use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::HttpServer;
+use hydradb::HydraDB;
 use openraft::storage::RaftStateMachine;
 use openraft::storage::Snapshot;
 use openraft::BasicNode;
@@ -28,7 +29,6 @@ use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::StoredMembership;
 use serde::{Deserialize, Serialize};
-use sotradb::SotraDB;
 use std::fmt;
 use std::io;
 use std::io::Cursor;
@@ -109,13 +109,13 @@ pub struct StoredSnapshot {
 pub struct StateMachineData {
     pub last_applied_log: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, BasicNode>,
-    pub data: SotraDB,
+    pub data: HydraDB,
 }
 
 impl StateMachineData {
     fn new(namespace: String) -> anyhow::Result<Self> {
         Ok(Self {
-            data: SotraDB::new(namespace)?,
+            data: HydraDB::new(namespace)?,
             ..Default::default()
         })
     }

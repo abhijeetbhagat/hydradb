@@ -57,15 +57,15 @@ fn to_hint_entry(tstamp: u32, k: &[u8], v: &[u8], val_pos: u64) -> Vec<u8> {
 
 /// the main bitcask storage engine
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
-pub struct SotraDB {
+pub struct HydraDB {
     cur_cask: String, // dir name of the cur_cask
     cur_id: usize,    // needs to be atomic
     key_dir: KeyDir,
     cur_file_size: u64,
 }
 
-impl SotraDB {
-    /// creates an instance of `SotraDB` with the given `namespace`
+impl HydraDB {
+    /// creates an instance of `HydraDB` with the given `namespace`
     pub fn new<T: Into<String> + Debug>(namespace: T) -> Result<Self> {
         let namespace = namespace.into();
 
@@ -348,11 +348,11 @@ impl SotraDB {
 mod tests {
     use std::fs;
 
-    use crate::sotradb::SotraDB;
+    use crate::hydradb::HydraDB;
 
     #[test]
     fn test_del() {
-        let mut db = SotraDB::new("del").unwrap();
+        let mut db = HydraDB::new("del").unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.del("pooja").unwrap();
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_logging_and_reading() {
-        let mut db = SotraDB::new("names-to-addresses").unwrap();
+        let mut db = HydraDB::new("names-to-addresses").unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.put("pads", "hinjewadi").unwrap();
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_restore() {
-        let db = SotraDB::new("test").unwrap();
+        let db = HydraDB::new("test").unwrap();
         assert_eq!(db.key_dir.len(), 6);
         let e = db.key_dir.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_list_keys() {
-        let mut db = SotraDB::new("names-to-addresses").unwrap();
+        let mut db = HydraDB::new("names-to-addresses").unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.put("pads", "hinjewadi").unwrap();
@@ -432,13 +432,13 @@ mod tests {
 
     #[test]
     fn test_active_file() {
-        let db = SotraDB::new("active_file_test").unwrap();
+        let db = HydraDB::new("active_file_test").unwrap();
         assert_eq!(db.get_active_file(), 2)
     }
 
     #[test]
     fn test_split_file() {
-        let mut db = SotraDB::new("split_test").unwrap();
+        let mut db = HydraDB::new("split_test").unwrap();
         db.put("abhi", "rust").unwrap();
         db.put("pads", "java").unwrap();
         assert_eq!(db.get_active_file(), 0);
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        let mut db = SotraDB::new("merge_test").unwrap();
+        let mut db = HydraDB::new("merge_test").unwrap();
         db.put("abhi", "rust").unwrap();
         db.put("pads", "java").unwrap();
         assert_eq!(db.get_active_file(), 0);
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn test_hint_file_restore() {
         {
-            let mut db = SotraDB::new("hint_file_restore_test").unwrap();
+            let mut db = HydraDB::new("hint_file_restore_test").unwrap();
             db.put("abhi", "rust").unwrap();
             db.put("pads", "java").unwrap();
             assert_eq!(db.get_active_file(), 0);
@@ -505,7 +505,7 @@ mod tests {
         // the keydir should be now gone
 
         // restore from hint file
-        let _ = SotraDB::new("hint_file_restore_test").unwrap();
+        let _ = HydraDB::new("hint_file_restore_test").unwrap();
 
         let _ = fs::remove_dir_all("./hint_file_restore_test");
     }

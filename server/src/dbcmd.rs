@@ -1,5 +1,5 @@
 use anyhow::Result;
-use core::sotradb::SotraDB;
+use core::hydradb::HydraDB;
 use log::info;
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -29,7 +29,7 @@ fn parse(cmd: &str) -> DBCmd {
     }
 }
 
-pub async fn process(mut stream: TcpStream, db: Arc<RwLock<SotraDB>>) -> Result<()> {
+pub async fn process(mut stream: TcpStream, db: Arc<RwLock<HydraDB>>) -> Result<()> {
     let (reader, writer) = stream.split();
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
