@@ -204,7 +204,7 @@ impl SotraDB {
         // it shoudn't modify/delete any old files until the hint file is completed.
         // it shouldn't modify/delete the active file.
         // it should refer to the current keydir when building the hint file.
-        //
+        // after the hint file is created, all old files should be deleted.
         //
 
         // no merging if no old files
@@ -307,7 +307,15 @@ impl SotraDB {
             }
         }
 
-        // todo rename the temp file to cur_id - 1
+        for file_id in &files[..files.len() - 1] {
+            println!("rming ./{}/{}", self.cur_cask, file_id);
+
+            fs::remove_file(format!("./{}/{}", self.cur_cask, file_id))?;
+        }
+
+        println!("cur id {}", self.cur_id);
+
+        let _res = fs::rename(format!("{}/temp", self.cur_cask), format!("{}/{}", self.cur_cask, self.cur_id - 1));
 
         Ok(())
     }
@@ -456,6 +464,10 @@ mod tests {
         db.put("pooj", "pyth").unwrap();
         assert_eq!(db.get_active_file(), 1);
 
+        db.put("jane", "scal").unwrap();
+        db.put("zigg", "blac").unwrap();
+        assert_eq!(db.get_active_file(), 2);
+
         let val = db.get("abhi");
         assert!(val.is_ok());
         let val = val.unwrap();
@@ -463,6 +475,9 @@ mod tests {
 
         let result = db.merge();
         assert!(result.is_ok());
+
+        let files: Vec<_> = fs::read_dir("./merge_test").unwrap().collect();
+        assert_eq!(files.len(), 3);
 
         let _ = fs::remove_dir_all("./merge_test");
     }
