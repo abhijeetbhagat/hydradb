@@ -5,9 +5,8 @@ use std::path::{Path, PathBuf};
 
 /// iterates over a hint file
 pub struct HintFileIterator {
-    file: File,
-    path: PathBuf,
     buf: [u8; 20], // 4 crc + 4 tstamp + 4 vsz + 8 val_pos
+    reader: BufReader<File>
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -23,10 +22,13 @@ impl HintFileIterator {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path: PathBuf = path.as_ref().to_path_buf();
 
+        let file = File::options()
+            .read(true)
+            .open(&path)?;
+
         Ok(Self {
-            file: File::options().read(true).open(&path)?,
-            path,
             buf: [0; 4 + 4 + 4 + 8],
+            reader: BufReader::new(file)
         })
     }
 }
@@ -35,9 +37,8 @@ impl Iterator for HintFileIterator {
     type Item = Result<HintFileEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut reader = BufReader::new(&self.file);
 
-        if let Ok(size) = reader.read(&mut self.buf) && size != 0 {
+        if let Ok(size) = self.reader.read(&mut self.buf) && size != 0 {
             let mut i = 0;
             let mut j = 3;
 
@@ -53,7 +54,7 @@ impl Iterator for HintFileIterator {
             let val_pos = u64::from_be_bytes(self.buf[i..=j].try_into().unwrap());
 
             let mut key = vec![0; ksz as usize];
-            if let Err(e) = reader.read_exact(&mut key) {
+            if let Err(e) = self.reader.read_exact(&mut key) {
                  return Some(Err(e.into()))
             }
 

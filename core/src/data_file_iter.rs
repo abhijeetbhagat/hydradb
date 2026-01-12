@@ -15,21 +15,21 @@ pub struct DataFileEntry {
 
 /// iterates over a data file 
 pub struct DataFileIterator {
-    file: File,
-    path: PathBuf,
-    buf: [u8; 16] // 4 crc + 4 tstamp + 4 ksz + 4 vsz
+    buf: [u8; 16], // 4 crc + 4 tstamp + 4 ksz + 4 vsz
+    reader: BufReader<File>
+
 }
 
 impl DataFileIterator {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path: PathBuf = path.as_ref().to_path_buf();
+        let file = File::options()
+            .read(true)
+            .open(&path)?;
 
         Ok(Self {
-            file: File::options()
-                .read(true)
-                .open(&path)?,
-            path, 
-            buf: [0; 16]
+            buf: [0; 16],
+            reader: BufReader::new(file)
         })
     }
 }
@@ -38,9 +38,8 @@ impl Iterator for DataFileIterator {
     type Item = Result<DataFileEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut reader = BufReader::new(&self.file);
 
-        if let Ok(size) = reader.read(&mut self.buf) && size != 0 {
+        if let Ok(size) = self.reader.read(&mut self.buf) && size != 0 {
             let mut i = 4;
             let mut j = 7;
 
@@ -57,14 +56,14 @@ impl Iterator for DataFileIterator {
             // read key using ksz, val using vsz
             let mut key = vec![0; ksz as usize];
 
-            if let Err(e) =  reader.read_exact(&mut key) {
+            if let Err(e) =  self.reader.read_exact(&mut key) {
                  return Some(Err(e.into()))
             }
 
-            let val_pos = reader.stream_position().unwrap();
+            let val_pos = self.reader.stream_position().unwrap();
 
             let mut val = vec![0; vsz as usize];
-            if let Err(e) =  reader.read_exact(&mut val) {
+            if let Err(e) =  self.reader.read_exact(&mut val) {
                 return Some(Err(e.into()))
             }
 
