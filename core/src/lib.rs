@@ -12,7 +12,7 @@ use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::HttpServer;
-use hydradb::HydraDB;
+use hydradb::{HydraDB, HydraDBBuilder};
 use openraft::storage::RaftStateMachine;
 use openraft::storage::Snapshot;
 use openraft::BasicNode;
@@ -115,7 +115,7 @@ pub struct StateMachineData {
 impl StateMachineData {
     fn new(namespace: String) -> anyhow::Result<Self> {
         Ok(Self {
-            data: HydraDB::new(namespace)?,
+            data: HydraDBBuilder::new().with_cask(namespace).build()?,
             ..Default::default()
         })
     }

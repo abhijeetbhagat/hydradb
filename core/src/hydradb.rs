@@ -15,12 +15,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(not(test))]
-const MAX_FILE_SIZE_THRESHOLD: u64 = 1048576;
-
-#[cfg(test)]
-const MAX_FILE_SIZE_THRESHOLD: u64 = 60;
-
 /// returns a raw db entry to persist from the given data
 #[inline]
 fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
@@ -62,11 +56,12 @@ pub struct HydraDB {
     cur_id: usize,    // needs to be atomic
     key_dir: KeyDir,
     cur_file_size: u64,
+    max_file_size_threshold: u64
 }
 
 impl HydraDB {
     /// creates an instance of `HydraDB` with the given `namespace`
-    pub fn new<T: Into<String> + Debug>(namespace: T) -> Result<Self> {
+    pub fn new<T: Into<String> + Debug>(namespace: T, max_file_size_threshold: u64) -> Result<Self> {
         let namespace = namespace.into();
 
         let cur_id;
@@ -107,6 +102,7 @@ impl HydraDB {
             cur_id,
             key_dir: KeyDir::new(),
             cur_file_size,
+            max_file_size_threshold
         };
 
         let _ = db.build_key_dir();
@@ -175,7 +171,7 @@ impl HydraDB {
         let k = k.into();
         let v = v.into();
 
-        if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size) > MAX_FILE_SIZE_THRESHOLD
+        if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size) > self.max_file_size_threshold
         {
             self.cur_id += 1;
             self.cur_file_size = 0;
@@ -352,15 +348,43 @@ impl HydraDB {
     }
 }
 
+pub struct HydraDBBuilder {
+    max_file_size_threshold: u64,
+    cask: Option<String>
+}
+
+impl HydraDBBuilder {
+    pub fn new() -> Self {
+        Self {
+            max_file_size_threshold: 1048576,
+            cask: None
+        }
+    }
+
+    pub fn with_file_limit(mut self, l: u64) -> Self {
+        self.max_file_size_threshold = l;
+        self
+    }
+
+    pub fn with_cask<T: Into<String>>(mut self, cask: T) -> Self {
+        self.cask = Some(cask.into());
+        self
+    }
+
+    pub fn build(self) -> Result<HydraDB> {
+        HydraDB::new(self.cask.unwrap(), self.max_file_size_threshold)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use crate::hydradb::HydraDB;
+    use crate::hydradb::{HydraDB, HydraDBBuilder};
 
     #[test]
     fn test_del() {
-        let mut db = HydraDB::new("del").unwrap();
+        let mut db = HydraDB::new("del", 60).unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.del("pooja").unwrap();
@@ -372,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_logging_and_reading() {
-        let mut db = HydraDB::new("names-to-addresses").unwrap();
+        let mut db = HydraDB::new("names-to-addresses", 60).unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.put("pads", "hinjewadi").unwrap();
@@ -399,8 +423,19 @@ mod tests {
     }
 
     #[test]
+    fn test_logging_profile() {
+        let mut db = HydraDBBuilder::new()
+            .with_cask("logging_profile")
+            .with_file_limit(4_194_304)
+            .build().unwrap();
+        for i in 0..100_000 {
+            db.put(format!("key-{}", i), "value").unwrap();
+        }
+    }
+
+    #[test]
     fn test_restore() {
-        let db = HydraDB::new("test").unwrap();
+        let db = HydraDB::new("test", 60).unwrap();
         assert_eq!(db.key_dir.len(), 6);
         let e = db.key_dir.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
@@ -423,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_list_keys() {
-        let mut db = HydraDB::new("names-to-addresses").unwrap();
+        let mut db = HydraDB::new("names-to-addresses", 60).unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.put("pads", "hinjewadi").unwrap();
@@ -440,13 +475,13 @@ mod tests {
 
     #[test]
     fn test_active_file() {
-        let db = HydraDB::new("active_file_test").unwrap();
+        let db = HydraDB::new("active_file_test", 60).unwrap();
         assert_eq!(db.get_active_file(), 2)
     }
 
     #[test]
     fn test_split_file() {
-        let mut db = HydraDB::new("split_test").unwrap();
+        let mut db = HydraDB::new("split_test", 60).unwrap();
         db.put("abhi", "rust").unwrap();
         db.put("pads", "java").unwrap();
         assert_eq!(db.get_active_file(), 0);
@@ -463,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        let mut db = HydraDB::new("merge_test").unwrap();
+        let mut db = HydraDB::new("merge_test", 60).unwrap();
         db.put("abhi", "rust").unwrap();
         db.put("pads", "java").unwrap();
         assert_eq!(db.get_active_file(), 0);
@@ -493,7 +528,7 @@ mod tests {
     #[test]
     fn test_hint_file_restore() {
         {
-            let mut db = HydraDB::new("hint_file_restore_test").unwrap();
+            let mut db = HydraDB::new("hint_file_restore_test", 60).unwrap();
             db.put("abhi", "rust").unwrap();
             db.put("pads", "java").unwrap();
             assert_eq!(db.get_active_file(), 0);
@@ -513,7 +548,7 @@ mod tests {
         // the keydir should be now gone
 
         // restore from hint file
-        let _ = HydraDB::new("hint_file_restore_test").unwrap();
+        let _ = HydraDB::new("hint_file_restore_test", 60).unwrap();
 
         let _ = fs::remove_dir_all("./hint_file_restore_test");
     }

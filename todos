@@ -3,3 +3,4 @@
 [x] post merge, delete old files & update keydir 
 [x] impl file splitting during deletion
 [ ] optimize allocations in to_db_entry, to_hint_entry functions
+[ ] optimize file opening & writing (from a samply profile run for 100k records insertion, lot of time spent doing io)
