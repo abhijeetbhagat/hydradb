@@ -1,4 +1,5 @@
 [x] impl iterators for hint, data files
 [x] implement merging active file data & hint file data
 [x] post merge, delete old files & update keydir 
+[x] impl file splitting during deletion
 [ ] optimize allocations in to_db_entry, to_hint_entry functions

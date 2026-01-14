@@ -160,8 +160,18 @@ impl HydraDB {
 
     /// puts the given key-value pair under the set namespace
     pub fn put(&mut self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> Result<()> {
-        // first write to cur file
-        // TODO if file almost full, then create new file, bump id
+        let k = k.into();
+        let v = v.into();
+
+        let entry = self.put_with_file_size_check(k.clone(), v)?;
+
+        // then write to im
+        self.key_dir.put(k, entry);
+
+        Ok(())
+    }
+
+    fn put_with_file_size_check(&mut self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> Result<KeyDirEntry> {
         let k = k.into();
         let v = v.into();
 
@@ -176,10 +186,7 @@ impl HydraDB {
 
         self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
 
-        // then write to im
-        self.key_dir.put(k, entry);
-
-        Ok(())
+        Ok(entry)
     }
 
     /// deletes the given key
@@ -189,7 +196,8 @@ impl HydraDB {
         let k_exists = self.key_dir.has_key(k);
         if k_exists {
             // mark entry as deleted
-            let _entry = self.persist(k, b"TOMBSTONE")?;
+            // let _entry = self.persist(k, b"TOMBSTONE")?;
+            let _ = self.put_with_file_size_check(Bytes::copy_from_slice(k), &b"TOMBSTONE"[..])?;
 
             // then del from im
             self.key_dir.del(k);
