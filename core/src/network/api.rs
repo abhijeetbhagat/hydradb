@@ -1,11 +1,11 @@
+use actix_web::Responder;
 use actix_web::post;
 use actix_web::web;
 use actix_web::web::Data;
-use actix_web::Responder;
 use web::Json;
 
-use crate::app::App;
 use crate::Request;
+use crate::app::App;
 
 /**
  * Application API

@@ -1,3 +1,4 @@
+use openraft::BasicNode;
 use openraft::error::InstallSnapshotError;
 use openraft::error::NetworkError;
 use openraft::error::RemoteError;
@@ -11,13 +12,12 @@ use openraft::raft::InstallSnapshotRequest;
 use openraft::raft::InstallSnapshotResponse;
 use openraft::raft::VoteRequest;
 use openraft::raft::VoteResponse;
-use openraft::BasicNode;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-use crate::typ;
 use crate::NodeId;
 use crate::TypeConfig;
+use crate::typ;
 
 /// Makes outbound calls to the raft api
 pub struct Network {}

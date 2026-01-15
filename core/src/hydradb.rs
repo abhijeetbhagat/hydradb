@@ -1,9 +1,8 @@
-use crate::key_dir::{KeyDirEntry, KeyDir};
+use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
 use crate::utils::calc_crc;
 use anyhow::Result;
 use bytes::Bytes;
-use tokio::io::{AsyncWriteExt};
 use core::str;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -11,11 +10,12 @@ use std::fs;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use std::sync::{Arc, Mutex};
+use tokio::io::AsyncWriteExt;
 
 /// returns a raw db entry to persist from the given data
 #[inline]
@@ -60,12 +60,16 @@ pub struct HydraDB {
     cur_file_size: u64,
     max_file_size_threshold: u64,
     #[serde(skip)]
-    writer: Option<Arc<Mutex<BufWriter<File>>>>
+    writer: Option<Arc<Mutex<BufWriter<File>>>>,
+    last_val_offset: u64,
 }
 
 impl HydraDB {
     /// creates an instance of `HydraDB` with the given `namespace`
-    pub fn new<T: Into<String> + Debug>(namespace: T, max_file_size_threshold: u64) -> Result<Self> {
+    pub fn new<T: Into<String> + Debug>(
+        namespace: T,
+        max_file_size_threshold: u64,
+    ) -> Result<Self> {
         let namespace = namespace.into();
 
         let cur_id;
@@ -82,10 +86,12 @@ impl HydraDB {
                 let entry = entry?;
                 let path = entry.path();
 
-                if path.is_file() && 
-                let Some(path) = path.file_name() && 
-                let Some(path) = path.to_str() && 
-                path != "hint" && path != "temp" {
+                if path.is_file()
+                    && let Some(path) = path.file_name()
+                    && let Some(path) = path.to_str()
+                    && path != "hint"
+                    && path != "temp"
+                {
                     println!("path is {path}");
                     mx = std::cmp::max(mx, path.parse::<usize>()?)
                 }
@@ -112,7 +118,8 @@ impl HydraDB {
             key_dir: KeyDir::new(),
             cur_file_size,
             max_file_size_threshold,
-            writer: Some(Arc::new(Mutex::new(BufWriter::new(file))))
+            writer: Some(Arc::new(Mutex::new(BufWriter::new(file)))),
+            last_val_offset: 0,
         };
 
         let _ = db.build_key_dir();
@@ -177,11 +184,16 @@ impl HydraDB {
         Ok(())
     }
 
-    fn put_with_file_size_check(&mut self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> Result<KeyDirEntry> {
+    fn put_with_file_size_check(
+        &mut self,
+        k: impl Into<Bytes>,
+        v: impl Into<Bytes>,
+    ) -> Result<KeyDirEntry> {
         let k = k.into();
         let v = v.into();
 
-        if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size) > self.max_file_size_threshold
+        if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size)
+            > self.max_file_size_threshold
         {
             self.cur_id += 1;
             self.cur_file_size = 0;
@@ -195,6 +207,25 @@ impl HydraDB {
         Ok(entry)
     }
 
+    fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
+        let writer = self.writer.clone().unwrap();
+        let mut writer = writer.lock().unwrap();
+        let file_id = self.cur_id;
+        let ksz = k.len() as u32;
+        let val_pos = self.last_val_offset + 16 + ksz as u64;
+        let vsz = v.len() as u32;
+        self.last_val_offset += 16 + ksz as u64 + vsz as u64;
+        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
+        let crc = calc_crc(tstamp, ksz, vsz, k, v);
+
+        let entry = to_db_entry(crc, tstamp, k, v);
+
+        let _ = writer.write_all(&entry);
+        let _ = writer.flush();
+
+        Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
+    }
+
     /// deletes the given key
     pub fn del(&mut self, k: impl AsRef<[u8]>) -> Result<bool> {
         // TODO if file almost full, then create new file, bump id
@@ -202,8 +233,7 @@ impl HydraDB {
         let k_exists = self.key_dir.has_key(k);
         if k_exists {
             // mark entry as deleted
-            // let _entry = self.persist(k, b"TOMBSTONE")?;
-            let _ = self.put_with_file_size_check(Bytes::copy_from_slice(k), &b"TOMBSTONE"[..])?;
+            let _ = self.put_with_file_size_check(Bytes::copy_from_slice(k), "TOMBSTONE")?;
 
             // then del from im
             self.key_dir.del(k);
@@ -329,7 +359,10 @@ impl HydraDB {
 
         println!("cur id {}", self.cur_id);
 
-        let _res = fs::rename(format!("{}/temp", self.cur_cask), format!("{}/{}", self.cur_cask, self.cur_id - 1));
+        let _res = fs::rename(
+            format!("{}/temp", self.cur_cask),
+            format!("{}/{}", self.cur_cask, self.cur_id - 1),
+        );
 
         Ok(())
     }
@@ -338,37 +371,19 @@ impl HydraDB {
     pub fn list_all(&self) -> Option<Vec<Bytes>> {
         self.key_dir.keys()
     }
-
-    fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
-        let writer = self.writer.clone().unwrap();
-        let mut writer = writer.lock().unwrap();
-        let file_id = self.cur_id;
-        let ksz = k.len() as u32;
-        let val_pos = writer.seek(SeekFrom::End(0))? + 4 + 4 + 4 + 4 + ksz as u64;
-        let vsz = v.len() as u32;
-        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
-        let crc = calc_crc(tstamp, ksz, vsz, k, v);
-
-        let entry = to_db_entry(crc, tstamp, k, v);
-
-        let _ = writer.write_all(&entry);
-        let _ = writer.flush();
-
-        Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
-    }
 }
 
 #[derive(Default)]
 pub struct HydraDBBuilder {
     max_file_size_threshold: u64,
-    cask: Option<String>
+    cask: Option<String>,
 }
 
 impl HydraDBBuilder {
     pub fn new() -> Self {
         Self {
             max_file_size_threshold: 1048576,
-            cask: None
+            cask: None,
         }
     }
 
@@ -407,7 +422,10 @@ mod tests {
 
     #[test]
     fn test_logging_and_reading() {
-        let mut db = HydraDB::new("names-to-addresses", 60).unwrap();
+        let mut db = HydraDBBuilder::new()
+            .with_cask("names-to-addresses")
+            .build()
+            .unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.put("pads", "hinjewadi").unwrap();
@@ -438,7 +456,8 @@ mod tests {
         let mut db = HydraDBBuilder::new()
             .with_cask("logging_profile")
             .with_file_limit(4_194_304)
-            .build().unwrap();
+            .build()
+            .unwrap();
         for i in 0..100_000 {
             db.put(format!("key-{}", i), "value").unwrap();
         }
