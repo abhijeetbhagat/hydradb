@@ -205,7 +205,7 @@ impl HydraDB {
         }
 
         let entry = self.persist(&k, &v)?;
-        println!("entry inserted: {:?}", entry);
+        // debug!("entry inserted: {:?}", entry);
 
         self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
 
