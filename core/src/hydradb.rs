@@ -61,6 +61,8 @@ pub struct HydraDB {
     max_file_size_threshold: u64,
     #[serde(skip)]
     writer: Option<Arc<Mutex<BufWriter<File>>>>,
+    // tracks the val positions in a data file
+    // so that we avoid expensive seek operations to calculate them
     last_val_offset: u64,
 }
 
@@ -74,12 +76,14 @@ impl HydraDB {
 
         let cur_id;
         let cur_file_size;
+        let last_val_offset;
 
         if !fs::exists(format!("./{namespace}"))? {
             let dir_builder = DirBuilder::new();
             dir_builder.create(format!("./{}", &namespace))?;
             cur_id = 0;
             cur_file_size = 0;
+            last_val_offset = 0;
         } else {
             let mut mx = 0;
             for entry in fs::read_dir(format!("./{}", &namespace))? {
@@ -105,9 +109,10 @@ impl HydraDB {
             } else {
                 0
             };
+            last_val_offset = cur_file_size;
         }
 
-        let mut file = File::options()
+        let file = File::options()
             .create(true)
             .append(true)
             .open(format!("./{}/{}", namespace, cur_id))?;
@@ -119,7 +124,7 @@ impl HydraDB {
             cur_file_size,
             max_file_size_threshold,
             writer: Some(Arc::new(Mutex::new(BufWriter::new(file)))),
-            last_val_offset: 0,
+            last_val_offset,
         };
 
         let _ = db.build_key_dir();
@@ -212,9 +217,9 @@ impl HydraDB {
         let mut writer = writer.lock().unwrap();
         let file_id = self.cur_id;
         let ksz = k.len() as u32;
-        let val_pos = self.last_val_offset + 16 + ksz as u64;
+        let val_pos = self.last_val_offset + 16 + ksz as u64; // 16 bytes header size
         let vsz = v.len() as u32;
-        self.last_val_offset += 16 + ksz as u64 + vsz as u64;
+        self.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
         let crc = calc_crc(tstamp, ksz, vsz, k, v);
 
