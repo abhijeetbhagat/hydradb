@@ -3,17 +3,19 @@ use crate::restore::*;
 use crate::utils::calc_crc;
 use anyhow::Result;
 use bytes::Bytes;
+use tokio::io::{AsyncWriteExt};
 use core::str;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
+use std::sync::{Arc, Mutex};
 
 /// returns a raw db entry to persist from the given data
 #[inline]
@@ -56,7 +58,9 @@ pub struct HydraDB {
     cur_id: usize,    // needs to be atomic
     key_dir: KeyDir,
     cur_file_size: u64,
-    max_file_size_threshold: u64
+    max_file_size_threshold: u64,
+    #[serde(skip)]
+    writer: Option<Arc<Mutex<BufWriter<File>>>>
 }
 
 impl HydraDB {
@@ -97,12 +101,18 @@ impl HydraDB {
             };
         }
 
+        let mut file = File::options()
+            .create(true)
+            .append(true)
+            .open(format!("./{}/{}", namespace, cur_id))?;
+
         let mut db = Self {
             cur_cask: namespace,
             cur_id,
             key_dir: KeyDir::new(),
             cur_file_size,
-            max_file_size_threshold
+            max_file_size_threshold,
+            writer: Some(Arc::new(Mutex::new(BufWriter::new(file))))
         };
 
         let _ = db.build_key_dir();
@@ -330,24 +340,25 @@ impl HydraDB {
     }
 
     fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
-        let mut file = File::options()
-            .create(true)
-            .append(true)
-            .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
+        let writer = self.writer.clone().unwrap();
+        let mut writer = writer.lock().unwrap();
         let file_id = self.cur_id;
         let ksz = k.len() as u32;
-        let val_pos = file.seek(SeekFrom::End(0))? + 4 + 4 + 4 + 4 + ksz as u64;
+        let val_pos = writer.seek(SeekFrom::End(0))? + 4 + 4 + 4 + 4 + ksz as u64;
         let vsz = v.len() as u32;
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
         let crc = calc_crc(tstamp, ksz, vsz, k, v);
 
         let entry = to_db_entry(crc, tstamp, k, v);
-        let _ = file.write_all(&entry);
+
+        let _ = writer.write_all(&entry);
+        let _ = writer.flush();
 
         Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
     }
 }
 
+#[derive(Default)]
 pub struct HydraDBBuilder {
     max_file_size_threshold: u64,
     cask: Option<String>
