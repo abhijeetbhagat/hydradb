@@ -181,7 +181,7 @@ impl HydraDB {
         let k = k.into();
         let v = v.into();
 
-        let entry = self.put_with_file_size_check(k.clone(), v)?;
+        let entry = self.put_with_file_size_check(&k, &v)?;
 
         // then write to im
         self.key_dir.put(k, entry);
@@ -189,13 +189,9 @@ impl HydraDB {
         Ok(())
     }
 
-    fn put_with_file_size_check(
-        &mut self,
-        k: impl Into<Bytes>,
-        v: impl Into<Bytes>,
-    ) -> Result<KeyDirEntry> {
-        let k = k.into();
-        let v = v.into();
+    fn put_with_file_size_check(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
+        // let k = k.into();
+        // let v = v.into();
 
         if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size)
             > self.max_file_size_threshold
@@ -238,7 +234,7 @@ impl HydraDB {
         let k_exists = self.key_dir.has_key(k);
         if k_exists {
             // mark entry as deleted
-            let _ = self.put_with_file_size_check(Bytes::copy_from_slice(k), "TOMBSTONE")?;
+            let _ = self.put_with_file_size_check(k, b"TOMBSTONE")?;
 
             // then del from im
             self.key_dir.del(k);
