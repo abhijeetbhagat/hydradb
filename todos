@@ -2,5 +2,8 @@
 [x] implement merging active file data & hint file data
 [x] post merge, delete old files & update keydir 
 [x] impl file splitting during deletion
+[x] optimize file opening & writing (from a samply profile run for 100k records insertion, lot of time spent doing io)
+[x] optimize file opening during reading
 [ ] optimize allocations in to_db_entry, to_hint_entry functions
-[ ] optimize file opening & writing (from a samply profile run for 100k records insertion, lot of time spent doing io)
+[ ] profile & optimize merging
+[ ] durability analysis

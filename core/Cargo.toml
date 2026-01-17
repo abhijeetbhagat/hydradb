@@ -15,6 +15,8 @@ actix-web.workspace = true
 reqwest.workspace = true
 sled.workspace = true
 bytes.workspace = true
+rand.workspace = true
+dashmap.workspace = true
 
 [profile.release]
 opt-level = 3

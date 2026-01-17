@@ -15,7 +15,7 @@ use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::io::AsyncWriteExt;
+use dashmap::DashMap;
 
 /// returns a raw db entry to persist from the given data
 #[inline]
@@ -64,6 +64,9 @@ pub struct HydraDB {
     // tracks the val positions in a data file
     // so that we avoid expensive seek operations to calculate them
     last_val_offset: u64,
+    #[serde(skip)]
+    file_cache: DashMap<usize, Arc<File>>
+
 }
 
 impl HydraDB {
@@ -71,6 +74,7 @@ impl HydraDB {
     pub fn new<T: Into<String> + Debug>(
         namespace: T,
         max_file_size_threshold: u64,
+        cache_size: usize
     ) -> Result<Self> {
         let namespace = namespace.into();
 
@@ -125,6 +129,7 @@ impl HydraDB {
             max_file_size_threshold,
             writer: Some(Arc::new(Mutex::new(BufWriter::new(file)))),
             last_val_offset,
+            file_cache: DashMap::with_capacity(cache_size)
         };
 
         let _ = db.build_key_dir();
@@ -158,9 +163,14 @@ impl HydraDB {
             } = in_mem_entry;
             // println!("val_pos is {val_pos} val sz {val_sz}");
 
-            let mut file = File::options()
-                .read(true)
-                .open(format!("./{}/{}", self.cur_cask, file_id))?;
+            // println!("reading from ./{}/{}", self.cur_cask, file_id);
+            let mut file = if let Some(arcd_file) = self.file_cache.get(&file_id) {
+                arcd_file.clone()
+            } else {
+                self.file_cache.insert(file_id, Arc::new(File::options().read(true).open(format!("./{}/{}", self.cur_cask, file_id))?));
+                self.file_cache.get(&file_id).unwrap().clone()
+            };
+
 
             file.seek(SeekFrom::Current(val_pos as i64))?;
             // println!("file pos is {}", file.stream_pos);
@@ -378,6 +388,7 @@ impl HydraDB {
 pub struct HydraDBBuilder {
     max_file_size_threshold: u64,
     cask: Option<String>,
+    cache_size: usize
 }
 
 impl HydraDBBuilder {
@@ -385,11 +396,17 @@ impl HydraDBBuilder {
         Self {
             max_file_size_threshold: 1048576,
             cask: None,
+            cache_size: 10
         }
     }
 
     pub fn with_file_limit(mut self, l: u64) -> Self {
         self.max_file_size_threshold = l;
+        self
+    }
+
+    pub fn with_cache_size(mut self, n: usize) -> Self {
+        self.cache_size = n;
         self
     }
 
@@ -399,7 +416,7 @@ impl HydraDBBuilder {
     }
 
     pub fn build(self) -> Result<HydraDB> {
-        HydraDB::new(self.cask.unwrap(), self.max_file_size_threshold)
+        HydraDB::new(self.cask.unwrap(), self.max_file_size_threshold, self.cache_size)
     }
 }
 
@@ -408,10 +425,15 @@ mod tests {
     use std::fs;
 
     use crate::hydradb::{HydraDB, HydraDBBuilder};
+    use rand::Rng;
 
     #[test]
     fn test_del() {
-        let mut db = HydraDB::new("del", 60).unwrap();
+        let mut db = HydraDBBuilder::new()
+            .with_cask("del")
+            .with_file_limit(60)
+            .build()
+            .unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.del("pooja").unwrap();
@@ -462,11 +484,28 @@ mod tests {
         for i in 0..100_000 {
             db.put(format!("key-{}", i), "value").unwrap();
         }
+
+        // std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let mut rng = rand::rng();
+
+        for _ in 0..100_000 {
+            let random_index = rng.random_range(0..100_000);
+            let key = format!("key-{}", random_index);
+
+            let val = db.get(&key).unwrap();
+
+            std::hint::black_box(val);
+        }
     }
 
     #[test]
     fn test_restore() {
-        let db = HydraDB::new("test", 60).unwrap();
+        let db = HydraDBBuilder::new()
+            .with_cask("test")
+            .with_file_limit(60)
+            .build()
+            .unwrap();
         assert_eq!(db.key_dir.len(), 6);
         let e = db.key_dir.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
@@ -489,7 +528,11 @@ mod tests {
 
     #[test]
     fn test_list_keys() {
-        let mut db = HydraDB::new("names-to-addresses", 60).unwrap();
+        let mut db = HydraDBBuilder::new()
+            .with_cask("names-to-addresses")
+            .with_file_limit(60)
+            .build()
+            .unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
         db.put("abhi", "baner").unwrap();
         db.put("pads", "hinjewadi").unwrap();
@@ -506,13 +549,21 @@ mod tests {
 
     #[test]
     fn test_active_file() {
-        let db = HydraDB::new("active_file_test", 60).unwrap();
+        let db = HydraDBBuilder::new()
+            .with_cask("active_file_test")
+            .with_file_limit(60)
+            .build()
+            .unwrap();
         assert_eq!(db.get_active_file(), 2)
     }
 
     #[test]
     fn test_split_file() {
-        let mut db = HydraDB::new("split_test", 60).unwrap();
+        let mut db = HydraDBBuilder::new()
+            .with_cask("split_test")
+            .with_file_limit(60)
+            .build()
+            .unwrap();
         db.put("abhi", "rust").unwrap();
         db.put("pads", "java").unwrap();
         assert_eq!(db.get_active_file(), 0);
@@ -529,7 +580,11 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        let mut db = HydraDB::new("merge_test", 60).unwrap();
+        let mut db = HydraDBBuilder::new()
+            .with_cask("merge_test")
+            .with_file_limit(60)
+            .build()
+            .unwrap();
         db.put("abhi", "rust").unwrap();
         db.put("pads", "java").unwrap();
         assert_eq!(db.get_active_file(), 0);
@@ -559,7 +614,11 @@ mod tests {
     #[test]
     fn test_hint_file_restore() {
         {
-            let mut db = HydraDB::new("hint_file_restore_test", 60).unwrap();
+            let mut db = HydraDBBuilder::new()
+                .with_cask("hint_file_restore_test")
+                .with_file_limit(60)
+                .build()
+                .unwrap();
             db.put("abhi", "rust").unwrap();
             db.put("pads", "java").unwrap();
             assert_eq!(db.get_active_file(), 0);
@@ -579,7 +638,11 @@ mod tests {
         // the keydir should be now gone
 
         // restore from hint file
-        let _ = HydraDB::new("hint_file_restore_test", 60).unwrap();
+        let _ = HydraDBBuilder::new()
+            .with_cask("hint_file_restore_test")
+            .with_file_limit(60)
+            .build()
+            .unwrap();
 
         let _ = fs::remove_dir_all("./hint_file_restore_test");
     }
