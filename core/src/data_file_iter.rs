@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DataFileEntry {
+    pub crc: u32,
     pub tstamp: u32,
     pub ksz: u32,
     pub vsz: u32,
@@ -38,8 +39,12 @@ impl Iterator for DataFileIterator {
         if let Ok(size) = self.reader.read(&mut self.buf)
             && size != 0
         {
-            let mut i = 4;
-            let mut j = 7;
+            let mut i = 0;
+            let mut j = 3;
+
+            let crc = u32::from_be_bytes(self.buf[i..=j].try_into().unwrap());
+            i = j + 1;
+            j += 4;
 
             let tstamp = u32::from_be_bytes(self.buf[i..=j].try_into().unwrap());
             i = j + 1;
@@ -66,6 +71,7 @@ impl Iterator for DataFileIterator {
             }
 
             let entry = DataFileEntry {
+                crc,
                 tstamp,
                 ksz,
                 vsz,
@@ -111,6 +117,7 @@ mod test {
         assert_eq!(
             entry,
             DataFileEntry {
+                crc: 0,
                 tstamp: 1,
                 ksz: 4,
                 vsz: 4,

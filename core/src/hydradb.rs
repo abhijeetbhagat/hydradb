@@ -1,9 +1,12 @@
+use crate::data_file_iter::{DataFileEntry, DataFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
 use crate::utils::calc_crc;
 use anyhow::Result;
 use bytes::Bytes;
 use core::str;
+use dashmap::DashMap;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
@@ -15,7 +18,6 @@ use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use dashmap::DashMap;
 
 /// returns a raw db entry to persist from the given data
 #[inline]
@@ -65,8 +67,7 @@ pub struct HydraDB {
     // so that we avoid expensive seek operations to calculate them
     last_val_offset: u64,
     #[serde(skip)]
-    file_cache: DashMap<usize, Arc<File>>
-
+    file_cache: DashMap<usize, Arc<File>>,
 }
 
 impl HydraDB {
@@ -74,7 +75,7 @@ impl HydraDB {
     pub fn new<T: Into<String> + Debug>(
         namespace: T,
         max_file_size_threshold: u64,
-        cache_size: usize
+        cache_size: usize,
     ) -> Result<Self> {
         let namespace = namespace.into();
 
@@ -100,7 +101,7 @@ impl HydraDB {
                     && path != "hint"
                     && path != "temp"
                 {
-                    println!("path is {path}");
+                    debug!("path is {path}");
                     mx = std::cmp::max(mx, path.parse::<usize>()?)
                 }
             }
@@ -129,7 +130,7 @@ impl HydraDB {
             max_file_size_threshold,
             writer: Some(Arc::new(Mutex::new(BufWriter::new(file)))),
             last_val_offset,
-            file_cache: DashMap::with_capacity(cache_size)
+            file_cache: DashMap::with_capacity(cache_size),
         };
 
         let _ = db.build_key_dir();
@@ -161,19 +162,25 @@ impl HydraDB {
                 val_pos,
                 tstamp: _,
             } = in_mem_entry;
-            // println!("val_pos is {val_pos} val sz {val_sz}");
+            // debug!("val_pos is {val_pos} val sz {val_sz}");
 
-            // println!("reading from ./{}/{}", self.cur_cask, file_id);
+            // debug!("reading from ./{}/{}", self.cur_cask, file_id);
             let mut file = if let Some(arcd_file) = self.file_cache.get(&file_id) {
                 arcd_file.clone()
             } else {
-                self.file_cache.insert(file_id, Arc::new(File::options().read(true).open(format!("./{}/{}", self.cur_cask, file_id))?));
+                self.file_cache.insert(
+                    file_id,
+                    Arc::new(
+                        File::options()
+                            .read(true)
+                            .open(format!("./{}/{}", self.cur_cask, file_id))?,
+                    ),
+                );
                 self.file_cache.get(&file_id).unwrap().clone()
             };
 
-
             file.seek(SeekFrom::Current(val_pos as i64))?;
-            // println!("file pos is {}", file.stream_pos);
+            // debug!("file pos is {}", file.stream_pos);
 
             let mut v = Vec::with_capacity(val_sz as usize);
             let mut f = file.take(val_sz as u64);
@@ -293,56 +300,43 @@ impl HydraDB {
         files.sort();
 
         // open a temp file for storing merged data
-        let mut temp_file = File::options()
-            .create(true)
-            .append(true)
-            .open(format!("./{}/temp", self.cur_cask))?;
+        let mut temp_file = BufWriter::new(
+            File::options()
+                .create(true)
+                .append(true)
+                .open(format!("./{}/temp", self.cur_cask))?,
+        );
 
         // open a temp file for storing merged data
-        let mut hint_file = File::options()
-            .create(true)
-            .append(true)
-            .open(format!("./{}/hint", self.cur_cask))?;
+        let mut hint_file = BufWriter::new(
+            File::options()
+                .create(true)
+                .append(true)
+                .open(format!("./{}/hint", self.cur_cask))?,
+        );
 
-        // merge all files except the last one
+        // merge all files except the last one (active file)
         for file_id in &files[..files.len() - 1] {
-            let file = File::options()
-                .read(true)
-                .open(format!("./{}/{}", self.cur_cask, file_id))?;
-            println!("reading from file ./{}/{}", self.cur_cask, file_id);
+            debug!("reading from file ./{}/{}", self.cur_cask, file_id);
 
-            let mut reader = BufReader::new(file);
-            let mut buf = [0; 4 + 4 + 4 + 4]; // 4 crc + 4 tstamp + 4 ksz + 4 vsz
-            let mut i = 0;
-            let mut j = 4;
+            let file_iter = DataFileIterator::new(format!("./{}/{}", self.cur_cask, file_id))?;
 
-            while reader.read_exact(&mut buf).is_ok() {
-                println!("buf read: {:?}", buf);
-                let crc = u32::from_be_bytes(buf[i..j].try_into().unwrap());
-                i = j;
-                j += 4;
-                let tstamp = u32::from_be_bytes(buf[i..j].try_into().unwrap());
-                i = j;
-                j += 4;
-                let ksz = u32::from_be_bytes(buf[i..j].try_into().unwrap());
-                i = j;
-                j += 4;
-                let vsz = u32::from_be_bytes(buf[i..j].try_into().unwrap());
-                // read key using ksz, val using vsz
-                let mut key = vec![0; ksz as usize];
-                reader.read_exact(&mut key)?;
-
-                let val_pos = reader.stream_position().unwrap();
-
-                let mut val = vec![0; vsz as usize];
-                reader.read_exact(&mut val)?;
-
+            for DataFileEntry {
+                crc,
+                tstamp,
+                ksz: _ksz,
+                vsz: _vsz,
+                key,
+                val,
+                val_pos,
+            } in file_iter.flatten()
+            {
                 if let Some(entry) = self.key_dir.get(&key) {
                     // key present in keydir
 
                     // check if the current old file has the valid record verified by presence of
                     // entry in the keydir
-                    if entry.file_id == *file_id && entry.val_pos as u64 == val_pos {
+                    if entry.file_id == *file_id && entry.val_pos == val_pos {
                         let entry = to_db_entry(crc, tstamp, &key, &val);
                         let _ = temp_file.write_all(&entry);
 
@@ -356,19 +350,16 @@ impl HydraDB {
                 } else {
                     // key deleted so skip processing it
                 }
-
-                i = 0;
-                j = 4;
             }
         }
 
         for file_id in &files[..files.len() - 1] {
-            println!("rming ./{}/{}", self.cur_cask, file_id);
+            debug!("rming ./{}/{}", self.cur_cask, file_id);
 
             fs::remove_file(format!("./{}/{}", self.cur_cask, file_id))?;
         }
 
-        println!("cur id {}", self.cur_id);
+        debug!("cur id {}", self.cur_id);
 
         let _res = fs::rename(
             format!("{}/temp", self.cur_cask),
@@ -388,7 +379,7 @@ impl HydraDB {
 pub struct HydraDBBuilder {
     max_file_size_threshold: u64,
     cask: Option<String>,
-    cache_size: usize
+    cache_size: usize,
 }
 
 impl HydraDBBuilder {
@@ -396,7 +387,7 @@ impl HydraDBBuilder {
         Self {
             max_file_size_threshold: 1048576,
             cask: None,
-            cache_size: 10
+            cache_size: 10,
         }
     }
 
@@ -416,7 +407,11 @@ impl HydraDBBuilder {
     }
 
     pub fn build(self) -> Result<HydraDB> {
-        HydraDB::new(self.cask.unwrap(), self.max_file_size_threshold, self.cache_size)
+        HydraDB::new(
+            self.cask.unwrap(),
+            self.max_file_size_threshold,
+            self.cache_size,
+        )
     }
 }
 
