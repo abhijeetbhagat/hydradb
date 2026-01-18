@@ -18,6 +18,22 @@ bytes.workspace = true
 rand.workspace = true
 dashmap.workspace = true
 log.workspace = true
+env_logger.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "merge_bench"
+harness = false
+
+[[bench]]
+name = "put_bench"
+harness = false
+
+[[bench]]
+name = "get_bench"
+harness = false
 
 [profile.release]
 opt-level = 3

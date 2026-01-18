@@ -1,6 +1,8 @@
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use bytes::Bytes;
+// use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct KeyDirEntry {
@@ -24,6 +26,8 @@ impl KeyDirEntry {
 //TODO: concurrency required
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct KeyDir {
+    // #[serde(skip)]
+    // kv_store: DashMap<Bytes, KeyDirEntry>,
     kv_store: HashMap<Bytes, KeyDirEntry>,
 }
 
@@ -31,6 +35,7 @@ impl KeyDir {
     /// constructs a new in-mem store
     pub fn new() -> Self {
         Self {
+            // kv_store: DashMap::new(),
             kv_store: HashMap::new(),
         }
     }
@@ -42,6 +47,7 @@ impl KeyDir {
 
     /// gets the value for given key `k`
     pub fn get(&self, k: impl AsRef<[u8]>) -> Option<KeyDirEntry> {
+        // self.kv_store.get(k.as_ref()).map(|entry| entry.clone())
         self.kv_store.get(k.as_ref()).cloned()
     }
 
@@ -60,6 +66,12 @@ impl KeyDir {
         if self.kv_store.is_empty() {
             None
         } else {
+            // Some(
+            //     self.kv_store
+            //         .iter()
+            //         .map(|entry| entry.key().clone())
+            //         .collect(),
+            // )
             Some(self.kv_store.keys().cloned().collect())
         }
     }

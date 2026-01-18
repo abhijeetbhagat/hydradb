@@ -36,7 +36,7 @@ impl Restore for DataFileRestore {
         } in file_iter.flatten()
         {
             let key_dir_entry = KeyDirEntry::new(active_file_num, vsz, val_pos, tstamp);
-            key_dir.put(String::from_utf8(key).unwrap(), key_dir_entry);
+            key_dir.put(key, key_dir_entry);
         }
 
         Ok(())
@@ -68,7 +68,7 @@ impl Restore for HintFileRestore {
         } in iter.flatten()
         {
             let entry = KeyDirEntry::new(active_file_num - 1, vsz, val_pos, tstamp);
-            key_dir.put(String::from_utf8(key).unwrap(), entry);
+            key_dir.put(key, entry);
         }
 
         // 2. process data file
@@ -90,7 +90,7 @@ impl Restore for HintFileRestore {
             } else {
                 // we either insert a key that doesn't exist or overwrite it
                 let entry = KeyDirEntry::new(active_file_num, vsz, val_pos, tstamp);
-                key_dir.put(String::from_utf8(key).unwrap(), entry);
+                key_dir.put(key, entry);
             }
         }
 

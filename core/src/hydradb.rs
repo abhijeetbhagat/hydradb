@@ -1,4 +1,4 @@
-use crate::data_file_iter::{DataFileEntry, DataFileIterator};
+use crate::data_file_iter::{DataFileEntry, DataFileIterator, OptimizedDataFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
 use crate::utils::calc_crc;
@@ -10,7 +10,7 @@ use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -18,6 +18,7 @@ use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tracing::field::debug;
 
 /// returns a raw db entry to persist from the given data
 #[inline]
@@ -162,9 +163,9 @@ impl HydraDB {
                 val_pos,
                 tstamp: _,
             } = in_mem_entry;
-            // debug!("val_pos is {val_pos} val sz {val_sz}");
+            debug!("val_pos is {val_pos} val sz {val_sz}");
 
-            // debug!("reading from ./{}/{}", self.cur_cask, file_id);
+            debug!("reading from ./{}/{}", self.cur_cask, file_id);
             let mut file = if let Some(arcd_file) = self.file_cache.get(&file_id) {
                 arcd_file.clone()
             } else {
@@ -179,13 +180,14 @@ impl HydraDB {
                 self.file_cache.get(&file_id).unwrap().clone()
             };
 
-            file.seek(SeekFrom::Current(val_pos as i64))?;
-            // debug!("file pos is {}", file.stream_pos);
+            file.seek(SeekFrom::Start(val_pos))?;
+            debug!("file pos is {:?}", file.stream_position());
 
             let mut v = Vec::with_capacity(val_sz as usize);
             let mut f = file.take(val_sz as u64);
 
             f.read_to_end(&mut v)?;
+            debug!("value is {}", str::from_utf8(&v).unwrap());
 
             Ok(Some(v.into()))
         } else {
@@ -209,16 +211,22 @@ impl HydraDB {
     fn put_with_file_size_check(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
         // let k = k.into();
         // let v = v.into();
-
+        debug!("cur file size {}", self.cur_file_size);
         if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size)
-            > self.max_file_size_threshold
+            >= self.max_file_size_threshold
         {
             self.cur_id += 1;
+            let file = File::options()
+                .create(true)
+                .append(true)
+                .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
+
+            self.writer = Some(Arc::new(Mutex::new(BufWriter::new(file))));
             self.cur_file_size = 0;
+            self.last_val_offset = 0;
         }
 
-        let entry = self.persist(&k, &v)?;
-        // debug!("entry inserted: {:?}", entry);
+        let entry = self.persist(k, v)?;
 
         self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
 
@@ -306,6 +314,7 @@ impl HydraDB {
                 .append(true)
                 .open(format!("./{}/temp", self.cur_cask))?,
         );
+        let mut temp_file_has_data = false;
 
         // open a temp file for storing merged data
         let mut hint_file = BufWriter::new(
@@ -315,33 +324,60 @@ impl HydraDB {
                 .open(format!("./{}/hint", self.cur_cask))?,
         );
 
+        let mut cur_val_offset = 0;
+        let mut file_entry = DataFileEntry::new();
+
         // merge all files except the last one (active file)
         for file_id in &files[..files.len() - 1] {
-            debug!("reading from file ./{}/{}", self.cur_cask, file_id);
+            let mut file_iter =
+                OptimizedDataFileIterator::new(format!("./{}/{}", self.cur_cask, file_id))?;
 
-            let file_iter = DataFileIterator::new(format!("./{}/{}", self.cur_cask, file_id))?;
-
-            for DataFileEntry {
-                crc,
-                tstamp,
-                ksz: _ksz,
-                vsz: _vsz,
-                key,
-                val,
-                val_pos,
-            } in file_iter.flatten()
-            {
-                if let Some(entry) = self.key_dir.get(&key) {
+            // for DataFileEntry {
+            //     crc,
+            //     tstamp,
+            //     ksz: _ksz,
+            //     vsz: _vsz,
+            //     key,
+            //     val,
+            //     val_pos,
+            // } in file_iter.flatten()
+            while file_iter.next_into(&mut file_entry).is_some() {
+                if let Some(entry) = self.key_dir.get(&file_entry.key) {
                     // key present in keydir
 
                     // check if the current old file has the valid record verified by presence of
                     // entry in the keydir
-                    if entry.file_id == *file_id && entry.val_pos == val_pos {
-                        let entry = to_db_entry(crc, tstamp, &key, &val);
+                    if entry.file_id == *file_id && entry.val_pos == file_entry.val_pos {
+                        // if yes, then the entry is latest and can be recorded in the hint file
+                        // and the merged file
+                        let entry = to_db_entry(
+                            file_entry.crc,
+                            file_entry.tstamp,
+                            &file_entry.key,
+                            &file_entry.val,
+                        );
                         let _ = temp_file.write_all(&entry);
+                        temp_file_has_data = true;
 
-                        let entry = to_hint_entry(tstamp, &key, &val, val_pos);
+                        let val_pos = cur_val_offset + 16 + file_entry.key.len() as u64;
+                        cur_val_offset += entry.len() as u64;
+                        let entry = to_hint_entry(
+                            file_entry.tstamp,
+                            &file_entry.key,
+                            &file_entry.val,
+                            val_pos,
+                        );
                         let _ = hint_file.write_all(&entry);
+
+                        self.key_dir.put(
+                            file_entry.key.clone(),
+                            KeyDirEntry {
+                                file_id: self.cur_id - 1,
+                                val_sz: file_entry.val.len() as u32,
+                                val_pos,
+                                tstamp: file_entry.tstamp,
+                            },
+                        );
                     } else {
                         // key could be present in the active file or a newer old file getting
                         // processed in future iterations of this loop.
@@ -361,10 +397,15 @@ impl HydraDB {
 
         debug!("cur id {}", self.cur_id);
 
-        let _res = fs::rename(
-            format!("{}/temp", self.cur_cask),
-            format!("{}/{}", self.cur_cask, self.cur_id - 1),
-        );
+        if temp_file_has_data {
+            let _res = fs::rename(
+                format!("{}/temp", self.cur_cask),
+                format!("{}/{}", self.cur_cask, self.cur_id - 1),
+            );
+        } else {
+            fs::remove_file(format!("{}/temp", self.cur_cask))?;
+            fs::remove_file(format!("{}/hint", self.cur_cask))?;
+        }
 
         Ok(())
     }
@@ -419,7 +460,9 @@ impl HydraDBBuilder {
 mod tests {
     use std::fs;
 
-    use crate::hydradb::{HydraDB, HydraDBBuilder};
+    use crate::hydradb::HydraDBBuilder;
+    use env_logger;
+    use log::debug;
     use rand::Rng;
 
     #[test]
@@ -440,6 +483,9 @@ mod tests {
 
     #[test]
     fn test_logging_and_reading() {
+        let _ = env_logger::builder()
+            .is_test(true) // Ensures output is captured by cargo test
+            .try_init();
         let mut db = HydraDBBuilder::new()
             .with_cask("names-to-addresses")
             .build()
@@ -466,32 +512,12 @@ mod tests {
         let val = val.unwrap();
         assert_eq!(val, Some("mk".into()));
 
+        let val = db.get("ashu");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert_eq!(val, Some("baner".into()));
+
         let _ = fs::remove_dir_all("./names-to-addresses");
-    }
-
-    #[test]
-    fn test_logging_profile() {
-        let mut db = HydraDBBuilder::new()
-            .with_cask("logging_profile")
-            .with_file_limit(4_194_304)
-            .build()
-            .unwrap();
-        for i in 0..100_000 {
-            db.put(format!("key-{}", i), "value").unwrap();
-        }
-
-        // std::thread::sleep(std::time::Duration::from_millis(500));
-
-        let mut rng = rand::rng();
-
-        for _ in 0..100_000 {
-            let random_index = rng.random_range(0..100_000);
-            let key = format!("key-{}", random_index);
-
-            let val = db.get(&key).unwrap();
-
-            std::hint::black_box(val);
-        }
     }
 
     #[test]
@@ -575,6 +601,10 @@ mod tests {
 
     #[test]
     fn test_merge() {
+        let _ = env_logger::builder()
+            .is_test(true) // Ensures output is captured by cargo test
+            .try_init();
+
         let mut db = HydraDBBuilder::new()
             .with_cask("merge_test")
             .with_file_limit(60)
@@ -592,16 +622,55 @@ mod tests {
         db.put("zigg", "blac").unwrap();
         assert_eq!(db.get_active_file(), 2);
 
+        db.put("ashu", "java").unwrap();
+        db.put("muma", "mlsp").unwrap();
+        assert_eq!(db.get_active_file(), 3);
+
+        db.put("bran", "basi").unwrap();
+        db.put("darc", "dlng").unwrap();
+        assert_eq!(db.get_active_file(), 4);
+
+        db.put("laur", "lisp").unwrap();
+        db.put("dave", "dlng").unwrap();
+        assert_eq!(db.get_active_file(), 5);
+
+        db.put("ashu", "scal").unwrap();
+        db.put("zigg", "blac").unwrap();
+        assert_eq!(db.get_active_file(), 6);
+
+        db.put("nisc", "soli").unwrap();
+        db.put("conr", "java").unwrap();
+        assert_eq!(db.get_active_file(), 7);
+
+        db.put("jane", "jula").unwrap();
+        db.put("bran", "cppl").unwrap();
+        assert_eq!(db.get_active_file(), 8);
+
+        db.put("pooj", "dops").unwrap();
+        db.put("darn", "rlan").unwrap();
+        assert_eq!(db.get_active_file(), 9);
+
         let val = db.get("abhi");
         assert!(val.is_ok());
         let val = val.unwrap();
         assert_eq!(val, Some("rust".into()));
 
+        // merge
         let result = db.merge();
         assert!(result.is_ok());
 
         let files: Vec<_> = fs::read_dir("./merge_test").unwrap().collect();
         assert_eq!(files.len(), 3);
+
+        let val = db.get("pooj");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert_eq!(val, Some("dops".into()));
+
+        let val = db.get("jane");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert_eq!(val, Some("jula".into()));
 
         let _ = fs::remove_dir_all("./merge_test");
     }

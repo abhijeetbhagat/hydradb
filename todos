@@ -4,6 +4,7 @@
 [x] impl file splitting during deletion
 [x] optimize file opening & writing (from a samply profile run for 100k records insertion, lot of time spent doing io)
 [x] optimize file opening during reading
+[x] profile & optimize merging
+[x] move profiling to criterion
 [ ] optimize allocations in to_db_entry, to_hint_entry functions
-[ ] profile & optimize merging
 [ ] durability analysis
