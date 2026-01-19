@@ -13,6 +13,7 @@ use std::fs;
 use std::io::{BufWriter, Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::{
     fs::{DirBuilder, File},
@@ -54,21 +55,39 @@ fn to_hint_entry(tstamp: u32, k: &[u8], v: &[u8], val_pos: u64) -> Vec<u8> {
     o
 }
 
-/// the main bitcask storage engine
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
-pub struct HydraDB {
-    cur_cask: String, // dir name of the cur_cask
-    cur_id: usize,    // needs to be atomic
-    key_dir: KeyDir,
-    cur_file_size: u64,
-    max_file_size_threshold: u64,
-    #[serde(skip)]
-    writer: Option<Arc<Mutex<BufWriter<File>>>>,
+#[derive(Debug, Default)]
+struct WriterState {
+    writer: Option<BufWriter<File>>,
     // tracks the val positions in a data file
     // so that we avoid expensive seek operations to calculate them
     last_val_offset: u64,
+    cur_file_size: u64,
+}
+
+/// the main bitcask storage engine
+#[derive(Serialize, Deserialize, Debug)]
+pub struct HydraDB {
+    cur_cask: String,    // dir name of the cur_cask
+    cur_id: AtomicUsize, // needs to be atomic
+    key_dir: KeyDir,
+    max_file_size_threshold: u64,
+    // cur_file_size: AtomicU64,
+    // #[serde(skip)]
+    // writer: Mutex<Option<BufWriter<File>>>,
+    // tracks the val positions in a data file
+    // so that we avoid expensive seek operations to calculate them
+    // last_val_offset: AtomicU64,
+    #[serde(skip)]
+    writer: Mutex<WriterState>,
+
     #[serde(skip)]
     file_cache: DashMap<usize, Arc<File>>,
+}
+
+impl Default for HydraDB {
+    fn default() -> Self {
+        HydraDBBuilder::new().with_cask("default").build().unwrap()
+    }
 }
 
 impl HydraDB {
@@ -125,12 +144,14 @@ impl HydraDB {
 
         let mut db = Self {
             cur_cask: namespace,
-            cur_id,
+            cur_id: cur_id.into(),
             key_dir: KeyDir::new(),
-            cur_file_size,
             max_file_size_threshold,
-            writer: Some(Arc::new(Mutex::new(BufWriter::new(file)))),
-            last_val_offset,
+            writer: Mutex::new(WriterState {
+                writer: Some(BufWriter::new(file)),
+                last_val_offset,
+                cur_file_size,
+            }),
             file_cache: DashMap::with_capacity(cache_size),
         };
 
@@ -140,7 +161,7 @@ impl HydraDB {
     }
 
     fn get_active_file(&self) -> usize {
-        self.cur_id
+        self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// builds the in-mem store by scanning the data files
@@ -151,7 +172,12 @@ impl HydraDB {
             Box::new(DataFileRestore)
         };
 
-        restorer.restore("./", &self.cur_cask, self.cur_id, &mut self.key_dir)
+        restorer.restore(
+            "./",
+            &self.cur_cask,
+            self.cur_id.load(std::sync::atomic::Ordering::Relaxed),
+            &mut self.key_dir,
+        )
     }
 
     /// gets the value, if present, for the given key `k`
@@ -196,7 +222,7 @@ impl HydraDB {
     }
 
     /// puts the given key-value pair under the set namespace
-    pub fn put(&mut self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> Result<()> {
+    pub fn put(&self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> Result<()> {
         let k = k.into();
         let v = v.into();
 
@@ -208,52 +234,93 @@ impl HydraDB {
         Ok(())
     }
 
-    fn put_with_file_size_check(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
+    fn put_with_file_size_check(&self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
         // let k = k.into();
         // let v = v.into();
-        debug!("cur file size {}", self.cur_file_size);
-        if (16u64 + k.len() as u64 + v.len() as u64 + self.cur_file_size)
+        let mut writer = self.writer.lock().unwrap();
+
+        debug!("cur file size {}", writer.cur_file_size);
+        if (16u64 + k.len() as u64 + v.len() as u64 + writer.cur_file_size)
             >= self.max_file_size_threshold
         {
-            self.cur_id += 1;
-            let file = File::options()
-                .create(true)
-                .append(true)
-                .open(format!("./{}/{}", self.cur_cask, self.cur_id))?;
+            self.cur_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            self.writer = Some(Arc::new(Mutex::new(BufWriter::new(file))));
-            self.cur_file_size = 0;
-            self.last_val_offset = 0;
+            let file = File::options().create(true).append(true).open(format!(
+                "./{}/{}",
+                self.cur_cask,
+                self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+            ))?;
+
+            *writer = WriterState {
+                writer: Some(BufWriter::new(file)),
+                last_val_offset: 0,
+                cur_file_size: 0,
+            };
+
+            let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
+            let ksz = k.len() as u32;
+            let val_pos = writer.last_val_offset + 16 + ksz as u64; // 16 bytes header size
+            let vsz = v.len() as u32;
+            writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
+            let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
+            let crc = calc_crc(tstamp, ksz, vsz, k, v);
+
+            let entry = to_db_entry(crc, tstamp, k, v);
+
+            let _ = writer.writer.as_mut().unwrap().write_all(&entry);
+            let _ = writer.writer.as_mut().unwrap().flush();
+
+            writer.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
+
+            Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
+        } else {
+            let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
+            let ksz = k.len() as u32;
+            let val_pos = writer.last_val_offset + 16 + ksz as u64; // 16 bytes header size
+            let vsz = v.len() as u32;
+            writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
+            let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
+            let crc = calc_crc(tstamp, ksz, vsz, k, v);
+
+            let entry = to_db_entry(crc, tstamp, k, v);
+
+            let _ = writer.writer.as_mut().unwrap().write_all(&entry);
+            let _ = writer.writer.as_mut().unwrap().flush();
+
+            writer.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
+
+            Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
         }
 
-        let entry = self.persist(k, v)?;
+        // let entry = self.persist(k, v)?;
 
-        self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
+        // self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
 
-        Ok(entry)
+        // Ok(entry)
     }
 
-    fn persist(&mut self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
-        let writer = self.writer.clone().unwrap();
-        let mut writer = writer.lock().unwrap();
-        let file_id = self.cur_id;
-        let ksz = k.len() as u32;
-        let val_pos = self.last_val_offset + 16 + ksz as u64; // 16 bytes header size
-        let vsz = v.len() as u32;
-        self.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
-        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
-        let crc = calc_crc(tstamp, ksz, vsz, k, v);
+    // fn persist(&self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
+    //     let writer = self.writer.clone().unwrap();
+    //     let mut writer = writer.lock().unwrap();
+    //     let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
+    //     let ksz = k.len() as u32;
+    //     let val_pos = self.last_val_offset + 16 + ksz as u64; // 16 bytes header size
+    //     let vsz = v.len() as u32;
+    //     self.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
+    //     let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
+    //     let crc = calc_crc(tstamp, ksz, vsz, k, v);
 
-        let entry = to_db_entry(crc, tstamp, k, v);
+    //     let entry = to_db_entry(crc, tstamp, k, v);
 
-        let _ = writer.write_all(&entry);
-        let _ = writer.flush();
+    //     let _ = writer.write_all(&entry);
+    //     let _ = writer.flush();
 
-        Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
-    }
+    //     Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
+    // }
 
     /// deletes the given key
-    pub fn del(&mut self, k: impl AsRef<[u8]>) -> Result<bool> {
+    pub fn del(&self, k: impl AsRef<[u8]>) -> Result<bool> {
         // TODO if file almost full, then create new file, bump id
         let k = k.as_ref();
         let k_exists = self.key_dir.has_key(k);
@@ -269,7 +336,7 @@ impl HydraDB {
     }
 
     /// merges old files into a single file & generates a hint file
-    pub fn merge(&mut self) -> Result<()> {
+    pub fn merge(&self) -> Result<()> {
         // the goal of merge is to create a hint file.
         // it shoudn't modify/delete any old files until the hint file is completed.
         // it shouldn't modify/delete the active file.
@@ -278,7 +345,7 @@ impl HydraDB {
         //
 
         // no merging if no old files
-        if self.cur_id == 0 {
+        if self.cur_id.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             return Ok(());
         }
 
@@ -372,7 +439,7 @@ impl HydraDB {
                         self.key_dir.put(
                             file_entry.key.clone(),
                             KeyDirEntry {
-                                file_id: self.cur_id - 1,
+                                file_id: self.cur_id.load(std::sync::atomic::Ordering::Relaxed) - 1,
                                 val_sz: file_entry.val.len() as u32,
                                 val_pos,
                                 tstamp: file_entry.tstamp,
@@ -395,12 +462,19 @@ impl HydraDB {
             fs::remove_file(format!("./{}/{}", self.cur_cask, file_id))?;
         }
 
-        debug!("cur id {}", self.cur_id);
+        debug!(
+            "cur id {}",
+            self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+        );
 
         if temp_file_has_data {
             let _res = fs::rename(
                 format!("{}/temp", self.cur_cask),
-                format!("{}/{}", self.cur_cask, self.cur_id - 1),
+                format!(
+                    "{}/{}",
+                    self.cur_cask,
+                    self.cur_id.load(std::sync::atomic::Ordering::Relaxed) - 1
+                ),
             );
         } else {
             fs::remove_file(format!("{}/temp", self.cur_cask))?;

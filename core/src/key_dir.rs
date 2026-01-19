@@ -40,7 +40,7 @@ impl KeyDir {
     }
 
     /// puts the key-value pair in the store
-    pub fn put(&mut self, k: impl Into<Bytes>, v: KeyDirEntry) {
+    pub fn put(&self, k: impl Into<Bytes>, v: KeyDirEntry) {
         self.kv_store.insert(k.into(), v);
     }
 
@@ -51,7 +51,7 @@ impl KeyDir {
     }
 
     /// deletes the given key `k`
-    pub fn del(&mut self, k: impl AsRef<[u8]>) {
+    pub fn del(&self, k: impl AsRef<[u8]>) {
         self.kv_store.remove(k.as_ref());
     }
 
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn put_test() {
-        let mut store = KeyDir::new();
+        let store = KeyDir::new();
         store.put("abhi", KeyDirEntry::new(1, 5, 1, 0));
         store.put("pads", KeyDirEntry::new(1, 9, 2, 0));
         store.put("ashu", KeyDirEntry::new(1, 5, 3, 0));
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn del_test() {
-        let mut store = KeyDir::new();
+        let store = KeyDir::new();
         store.put("abhi", KeyDirEntry::new(1, 5, 1, 0));
         store.put("pads", KeyDirEntry::new(1, 9, 2, 0));
         store.del("abhi");
