@@ -5,6 +5,7 @@ use std::io;
 use std::ops::Bound;
 use std::ops::RangeBounds;
 
+use openraft::storage::LogFlushed;
 use openraft::Entry;
 use openraft::ErrorSubject;
 use openraft::ErrorVerb;
@@ -14,7 +15,6 @@ use openraft::RaftLogId;
 use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::Vote;
-use openraft::storage::LogFlushed;
 use sled::IVec;
 
 /// RaftLogStore implementation with a in-memory storage
@@ -116,7 +116,7 @@ impl LogStore {
                 source: StorageIOError::new(
                     ErrorSubject::Store,
                     ErrorVerb::Write,
-                    &io::Error::new(io::ErrorKind::Other, e),
+                    &io::Error::other(e),
                 ),
             })?;
 
@@ -148,7 +148,7 @@ impl LogStore {
                 source: StorageIOError::new(
                     ErrorSubject::Store,
                     ErrorVerb::Write,
-                    &io::Error::new(io::ErrorKind::Other, e),
+                    &io::Error::other(e),
                 ),
             })?;
 
@@ -200,7 +200,7 @@ impl LogStore {
                 source: StorageIOError::new(
                     ErrorSubject::Store,
                     ErrorVerb::Read,
-                    &io::Error::new(io::ErrorKind::Other, e),
+                    &io::Error::other(e),
                 ),
             })?;
 
@@ -227,7 +227,7 @@ impl LogStore {
                     source: StorageIOError::new(
                         ErrorSubject::Store,
                         ErrorVerb::Read,
-                        &io::Error::new(io::ErrorKind::Other, e),
+                        &io::Error::other(e),
                     ),
                 })?;
 
@@ -245,17 +245,17 @@ mod impl_log_store {
     use std::ops::RangeBounds;
 
     use crate::NodeId;
+    use openraft::storage::LogFlushed;
+    use openraft::storage::RaftLogStorage;
     use openraft::Entry;
     use openraft::LogId;
     use openraft::LogState;
     use openraft::RaftLogReader;
     use openraft::StorageError;
     use openraft::Vote;
-    use openraft::storage::LogFlushed;
-    use openraft::storage::RaftLogStorage;
 
-    use crate::TypeConfig;
     use crate::log_store::LogStore;
+    use crate::TypeConfig;
 
     impl RaftLogReader<TypeConfig> for LogStore
     where

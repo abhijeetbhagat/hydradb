@@ -8,11 +8,13 @@ pub mod network;
 pub mod restore;
 pub mod utils;
 
-use actix_web::HttpServer;
 use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
+use actix_web::HttpServer;
 use hydradb::{HydraDB, HydraDBBuilder};
+use openraft::storage::RaftStateMachine;
+use openraft::storage::Snapshot;
 use openraft::BasicNode;
 use openraft::Config;
 use openraft::Entry;
@@ -26,17 +28,14 @@ use openraft::SnapshotMeta;
 use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::StoredMembership;
-use openraft::storage::RaftStateMachine;
-use openraft::storage::Snapshot;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
 use std::io::Cursor;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing;
 
 pub type LogStore = log_store::LogStore;
 
@@ -230,7 +229,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 source: StorageIOError::new(
                                     ErrorSubject::Store,
                                     ErrorVerb::Write,
-                                    &io::Error::new(io::ErrorKind::Other, e),
+                                    &io::Error::other(e),
                                 ),
                             })?;
                         res.push(Response::Put {
@@ -242,7 +241,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                             source: StorageIOError::new(
                                 ErrorSubject::Store,
                                 ErrorVerb::Write,
-                                &io::Error::new(io::ErrorKind::Other, e),
+                                &io::Error::other(e),
                             ),
                         })?;
                         res.push(Response::Del { existed })
