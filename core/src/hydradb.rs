@@ -12,6 +12,7 @@ use std::fmt::Debug;
 use std::fs;
 use std::io::{BufWriter, Read, Write};
 use std::io::{Seek, SeekFrom};
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex};
@@ -189,10 +190,10 @@ impl HydraDB {
                 val_pos,
                 tstamp: _,
             } = in_mem_entry;
-            debug!("val_pos is {val_pos} val sz {val_sz}");
+            // debug!("val_pos is {val_pos} val sz {val_sz}");
 
-            debug!("reading from ./{}/{}", self.cur_cask, file_id);
-            let mut file = if let Some(arcd_file) = self.file_cache.get(&file_id) {
+            // debug!("reading from ./{}/{}", self.cur_cask, file_id);
+            let file = if let Some(arcd_file) = self.file_cache.get(&file_id) {
                 arcd_file.clone()
             } else {
                 self.file_cache.insert(
@@ -206,14 +207,15 @@ impl HydraDB {
                 self.file_cache.get(&file_id).unwrap().clone()
             };
 
-            file.seek(SeekFrom::Start(val_pos))?;
-            debug!("file pos is {:?}", file.stream_position());
+            // file.seek(SeekFrom::Start(val_pos))?;
+            // debug!("file pos is {:?}", file.stream_position());
 
-            let mut v = Vec::with_capacity(val_sz as usize);
-            let mut f = file.take(val_sz as u64);
+            let mut v = vec![0; val_sz as usize];
+            file.read_exact_at(&mut v, val_pos)?;
+            // let mut f = file.take(val_sz as u64);
 
-            f.read_to_end(&mut v)?;
-            debug!("value is {}", str::from_utf8(&v).unwrap());
+            // f.read_to_end(&mut v)?;
+            // debug!("value is {}", str::from_utf8(&v).unwrap());
 
             Ok(Some(v.into()))
         } else {
@@ -235,8 +237,6 @@ impl HydraDB {
     }
 
     fn put_with_file_size_check(&self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
-        // let k = k.into();
-        // let v = v.into();
         let mut writer = self.writer.lock().unwrap();
 
         debug!("cur file size {}", writer.cur_file_size);
