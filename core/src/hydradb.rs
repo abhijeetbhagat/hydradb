@@ -66,19 +66,23 @@ struct WriterState {
 /// the main bitcask storage engine
 #[derive(Serialize, Deserialize, Debug)]
 pub struct HydraDB {
-    cur_cask: String,    // dir name of the cur_cask
-    cur_id: AtomicUsize, // needs to be atomic
+    /// name of the cask (folder/namespace)
+    cur_cask: String,
+
+    /// current file id increases monotonically
+    cur_id: AtomicUsize,
+
+    /// in-mem kv map
     key_dir: KeyDir,
+
+    /// max file size after which a new one gets created
     max_file_size_threshold: u64,
-    // cur_file_size: AtomicU64,
-    // #[serde(skip)]
-    // writer: Mutex<Option<BufWriter<File>>>,
-    // tracks the val positions in a data file
-    // so that we avoid expensive seek operations to calculate them
-    // last_val_offset: AtomicU64,
+
+    /// file writer
     #[serde(skip)]
     writer: Mutex<WriterState>,
 
+    /// for caching files during reads
     #[serde(skip)]
     file_cache: DashMap<usize, Arc<File>>,
 }
@@ -159,10 +163,6 @@ impl HydraDB {
         Ok(db)
     }
 
-    fn get_active_file(&self) -> usize {
-        self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     /// builds the in-mem store by scanning the data files
     fn build_key_dir(&mut self) -> Result<()> {
         let restorer: Box<dyn Restore> = if Path::new(&format!("{}/hint", self.cur_cask)).exists() {
@@ -177,6 +177,10 @@ impl HydraDB {
             self.cur_id.load(std::sync::atomic::Ordering::Relaxed),
             &mut self.key_dir,
         )
+    }
+
+    fn get_active_file(&self) -> usize {
+        self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// gets the value, if present, for the given key `k`
@@ -255,47 +259,24 @@ impl HydraDB {
                 last_val_offset: 0,
                 cur_file_size: 0,
             };
-
-            let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
-            let ksz = k.len() as u32;
-            let val_pos = writer.last_val_offset + 16 + ksz as u64; // 16 bytes header size
-            let vsz = v.len() as u32;
-            writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
-            let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
-            let crc = calc_crc(tstamp, ksz, vsz, k, v);
-
-            let entry = to_db_entry(crc, tstamp, k, v);
-
-            let _ = writer.writer.as_mut().unwrap().write_all(&entry);
-            let _ = writer.writer.as_mut().unwrap().flush();
-
-            writer.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
-
-            Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
-        } else {
-            let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
-            let ksz = k.len() as u32;
-            let val_pos = writer.last_val_offset + 16 + ksz as u64; // 16 bytes header size
-            let vsz = v.len() as u32;
-            writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
-            let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
-            let crc = calc_crc(tstamp, ksz, vsz, k, v);
-
-            let entry = to_db_entry(crc, tstamp, k, v);
-
-            let _ = writer.writer.as_mut().unwrap().write_all(&entry);
-            let _ = writer.writer.as_mut().unwrap().flush();
-
-            writer.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
-
-            Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
         }
 
-        // let entry = self.persist(k, v)?;
+        let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
+        let ksz = k.len() as u32;
+        let val_pos = writer.last_val_offset + 16 + ksz as u64; // 16 bytes header size
+        let vsz = v.len() as u32;
+        writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
+        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
+        let crc = calc_crc(tstamp, ksz, vsz, k, v);
 
-        // self.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
+        let entry = to_db_entry(crc, tstamp, k, v);
 
-        // Ok(entry)
+        let _ = writer.writer.as_mut().unwrap().write_all(&entry);
+        let _ = writer.writer.as_mut().unwrap().flush();
+
+        writer.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
+
+        Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
     }
 
     // fn persist(&self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
@@ -397,15 +378,6 @@ impl HydraDB {
             let mut file_iter =
                 OptimizedDataFileIterator::new(format!("./{}/{}", self.cur_cask, file_id))?;
 
-            // for DataFileEntry {
-            //     crc,
-            //     tstamp,
-            //     ksz: _ksz,
-            //     vsz: _vsz,
-            //     key,
-            //     val,
-            //     val_pos,
-            // } in file_iter.flatten()
             while file_iter.next_into(&mut file_entry).is_some() {
                 if let Some(entry) = self.key_dir.get(&file_entry.key) {
                     // key present in keydir
@@ -539,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_del() {
-        let mut db = HydraDBBuilder::new()
+        let db = HydraDBBuilder::new()
             .with_cask("del")
             .with_file_limit(60)
             .build()
@@ -621,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_list_keys() {
-        let mut db = HydraDBBuilder::new()
+        let db = HydraDBBuilder::new()
             .with_cask("names-to-addresses")
             .with_file_limit(60)
             .build()
@@ -652,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_split_file() {
-        let mut db = HydraDBBuilder::new()
+        let db = HydraDBBuilder::new()
             .with_cask("split_test")
             .with_file_limit(60)
             .build()
@@ -677,7 +649,7 @@ mod tests {
             .is_test(true) // Ensures output is captured by cargo test
             .try_init();
 
-        let mut db = HydraDBBuilder::new()
+        let db = HydraDBBuilder::new()
             .with_cask("merge_test")
             .with_file_limit(60)
             .build()
@@ -750,7 +722,7 @@ mod tests {
     #[test]
     fn test_hint_file_restore() {
         {
-            let mut db = HydraDBBuilder::new()
+            let db = HydraDBBuilder::new()
                 .with_cask("hint_file_restore_test")
                 .with_file_limit(60)
                 .build()
