@@ -7,3 +7,21 @@ a distributed KV store based on bitcask.
 - append only log for fast writes.
 - a read requires one seek operation.
 - manual merging.
+
+## Use as a library
+
+```rust
+
+    let mut db = HydraDBBuilder::new()
+    .with_cask("data")
+    .with_file_limit(60)
+    .build()?;
+
+    db.put("abhi", "rust")?;
+    db.put("ashu", "java")?;
+
+    let val = db.get("abhi")?;
+
+    db.del("abhi")?;
+    
+```

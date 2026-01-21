@@ -1,4 +1,4 @@
-use crate::data_file_iter::{DataFileEntry, DataFileIterator, OptimizedDataFileIterator};
+use crate::data_file_iter::{DataFileEntry, OptimizedDataFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
 use crate::utils::calc_crc;
@@ -10,17 +10,15 @@ use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufWriter, Read, Write};
-use std::io::{Seek, SeekFrom};
+use std::io::{BufWriter, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::field::debug;
 
 /// returns a raw db entry to persist from the given data
 #[inline]
