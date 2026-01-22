@@ -1,4 +1,5 @@
 pub mod app;
+pub mod builder;
 pub mod data_file_iter;
 pub mod hint_file_iter;
 pub mod hydradb;
@@ -12,7 +13,8 @@ use actix_web::HttpServer;
 use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
-use hydradb::{HydraDB, HydraDBBuilder};
+use builder::HydraDBBuilder;
+use hydradb::HydraDB;
 use openraft::BasicNode;
 use openraft::Config;
 use openraft::Entry;

@@ -1,3 +1,4 @@
+use crate::builder::HydraDBBuilder;
 use crate::data_file_iter::{DataFileEntry, OptimizedDataFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
@@ -64,7 +65,7 @@ struct WriterState {
 }
 
 /// the main bitcask storage engine
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct HydraDB {
     /// name of the cask (folder/namespace)
     cur_cask: String,
@@ -85,12 +86,6 @@ pub struct HydraDB {
     /// for caching files during reads
     #[serde(skip)]
     file_cache: DashMap<usize, Arc<File>>,
-}
-
-impl Default for HydraDB {
-    fn default() -> Self {
-        HydraDBBuilder::new().with_cask("default").build().unwrap()
-    }
 }
 
 impl HydraDB {
@@ -444,46 +439,6 @@ impl HydraDB {
     /// lists all the keys in the store
     pub fn list_all(&self) -> Option<Vec<Bytes>> {
         self.key_dir.keys()
-    }
-}
-
-#[derive(Default)]
-pub struct HydraDBBuilder {
-    max_file_size_threshold: u64,
-    cask: Option<String>,
-    cache_size: usize,
-}
-
-impl HydraDBBuilder {
-    pub fn new() -> Self {
-        Self {
-            max_file_size_threshold: 1048576,
-            cask: None,
-            cache_size: 10,
-        }
-    }
-
-    pub fn with_file_limit(mut self, l: u64) -> Self {
-        self.max_file_size_threshold = l;
-        self
-    }
-
-    pub fn with_cache_size(mut self, n: usize) -> Self {
-        self.cache_size = n;
-        self
-    }
-
-    pub fn with_cask<T: Into<String>>(mut self, cask: T) -> Self {
-        self.cask = Some(cask.into());
-        self
-    }
-
-    pub fn build(self) -> Result<HydraDB> {
-        HydraDB::new(
-            self.cask.unwrap(),
-            self.max_file_size_threshold,
-            self.cache_size,
-        )
     }
 }
 
