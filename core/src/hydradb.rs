@@ -239,29 +239,37 @@ impl HydraDB {
     }
 
     fn put_with_file_size_check(&self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
+        // allow only one writer at a time
         let mut writer = self.writer.lock().unwrap();
 
         debug!("cur file size {}", writer.cur_file_size);
-        if (16u64 + k.len() as u64 + v.len() as u64 + writer.cur_file_size)
+        let cur_id = if (16u64 + k.len() as u64 + v.len() as u64 + writer.cur_file_size)
             >= self.max_file_size_threshold
         {
-            self.cur_id
+            // SAFETY: it is safe to use relaxed ordering here since we are locking
+            // the writer at the beginning of this method. therefore, everything after
+            // will be sequential execution
+            let old_cur_id = self
+                .cur_id
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let new_cur_id = old_cur_id + 1;
 
-            let file = File::options().create(true).append(true).open(format!(
-                "./{}/{}",
-                self.cur_cask,
-                self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
-            ))?;
+            let file = File::options()
+                .create(true)
+                .append(true)
+                .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
 
             *writer = WriterState {
                 writer: Some(BufWriter::new(file)),
                 last_val_offset: 0,
                 cur_file_size: 0,
             };
-        }
+            new_cur_id
+        } else {
+            self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+        };
 
-        let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
+        let file_id = cur_id;
         let ksz = k.len() as u32;
         let val_pos = writer.last_val_offset + 16 + ksz as u64; // 16 bytes header size
         let vsz = v.len() as u32;
@@ -278,25 +286,6 @@ impl HydraDB {
 
         Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
     }
-
-    // fn persist(&self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
-    //     let writer = self.writer.clone().unwrap();
-    //     let mut writer = writer.lock().unwrap();
-    //     let file_id = self.cur_id.load(std::sync::atomic::Ordering::Relaxed);
-    //     let ksz = k.len() as u32;
-    //     let val_pos = self.last_val_offset + 16 + ksz as u64; // 16 bytes header size
-    //     let vsz = v.len() as u32;
-    //     self.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
-    //     let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
-    //     let crc = calc_crc(tstamp, ksz, vsz, k, v);
-
-    //     let entry = to_db_entry(crc, tstamp, k, v);
-
-    //     let _ = writer.write_all(&entry);
-    //     let _ = writer.flush();
-
-    //     Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
-    // }
 
     /// deletes the given key
     pub fn del(&self, k: impl AsRef<[u8]>) -> Result<bool> {
@@ -316,6 +305,8 @@ impl HydraDB {
 
     /// merges old files into a single file & generates a hint file
     pub fn merge(&self) -> Result<()> {
+        // note: merging may run concurrently with a write operation
+        //
         // the goal of merge is to create a hint file.
         // it shoudn't modify/delete any old files until the hint file is completed.
         // it shouldn't modify/delete the active file.
@@ -324,7 +315,8 @@ impl HydraDB {
         //
 
         // no merging if no old files
-        if self.cur_id.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        let cur_id = self.cur_id.load(std::sync::atomic::Ordering::Acquire);
+        if cur_id == 0 {
             return Ok(());
         }
 
@@ -333,19 +325,21 @@ impl HydraDB {
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
                 let path = entry.path();
-                if path.is_file() {
-                    if let Some(path) = path.file_name() {
-                        if let Some(path) = path.to_str() {
-                            path.parse::<usize>().ok()
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+
+                if !path.is_file() {
+                    return None;
                 }
+
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.parse::<usize>().ok())
+            })
+            .filter(|file_id| {
+                // we do this check because a concurrent write operation may
+                // create a new file while merging is in progress. so we select
+                // all files that are less than the cur_id that was fixed at the
+                // beginning of the merge
+                *file_id < cur_id
             })
             .collect();
 
@@ -362,7 +356,7 @@ impl HydraDB {
         );
         let mut temp_file_has_data = false;
 
-        // open a temp file for storing merged data
+        // open hint file for storing hint data
         let mut hint_file = BufWriter::new(
             File::options()
                 .create(true)
@@ -374,7 +368,7 @@ impl HydraDB {
         let mut file_entry = DataFileEntry::new();
 
         // merge all files except the last one (active file)
-        for file_id in &files[..files.len() - 1] {
+        for file_id in &files {
             let mut file_iter =
                 OptimizedDataFileIterator::new(format!("./{}/{}", self.cur_cask, file_id))?;
 
@@ -409,7 +403,7 @@ impl HydraDB {
                         self.key_dir.put(
                             file_entry.key.clone(),
                             KeyDirEntry {
-                                file_id: self.cur_id.load(std::sync::atomic::Ordering::Relaxed) - 1,
+                                file_id: cur_id - 1,
                                 val_sz: file_entry.val.len() as u32,
                                 val_pos,
                                 tstamp: file_entry.tstamp,
@@ -426,25 +420,18 @@ impl HydraDB {
             }
         }
 
-        for file_id in &files[..files.len() - 1] {
+        for file_id in &files {
             debug!("rming ./{}/{}", self.cur_cask, file_id);
 
             fs::remove_file(format!("./{}/{}", self.cur_cask, file_id))?;
         }
 
-        debug!(
-            "cur id {}",
-            self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
-        );
+        debug!("cur id {}", cur_id);
 
         if temp_file_has_data {
             let _res = fs::rename(
                 format!("{}/temp", self.cur_cask),
-                format!(
-                    "{}/{}",
-                    self.cur_cask,
-                    self.cur_id.load(std::sync::atomic::Ordering::Relaxed) - 1
-                ),
+                format!("{}/{}", self.cur_cask, cur_id - 1),
             );
         } else {
             fs::remove_file(format!("{}/temp", self.cur_cask))?;
