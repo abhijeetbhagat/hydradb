@@ -1,5 +1,5 @@
 use core::hydradb::HydraDBBuilder;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 use std::fs;
 
 fn setup() -> core::hydradb::HydraDB {
@@ -20,7 +20,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("put 1 million entries", |b| {
         b.iter_batched(
             || setup(),
-            |mut db| {
+            |db| {
                 let entry_per_file = 100_000;
                 for i in 0..10 {
                     for j in 0..entry_per_file {

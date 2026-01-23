@@ -1,5 +1,5 @@
 use core::hydradb::HydraDBBuilder;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 use std::fs;
 
 fn setup() -> core::hydradb::HydraDB {
@@ -34,7 +34,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("merge 1 million entries", |b| {
         b.iter_batched(
             || setup(),
-            |mut db| db.merge(),
+            |db| db.merge(),
             criterion::BatchSize::LargeInput,
         )
     });

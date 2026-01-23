@@ -1,5 +1,5 @@
 use core::hydradb::HydraDBBuilder;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 use rand::Rng;
 use std::fs;
 
@@ -27,7 +27,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("get 100k entries", |b| {
         b.iter_batched(
             || setup(),
-            |mut db| {
+            |db| {
                 let mut rng = rand::rng();
 
                 for _ in 0..100_000 {
