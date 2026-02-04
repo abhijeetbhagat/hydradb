@@ -1,4 +1,4 @@
-use core::hydradb::HydraDBBuilder;
+use core::builder::HydraDBBuilder;
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::fs;
 

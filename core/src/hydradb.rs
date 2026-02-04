@@ -1,17 +1,15 @@
-use crate::builder::HydraDBBuilder;
 use crate::data_file_iter::{DataFileEntry, OptimizedDataFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
 use crate::utils::calc_crc;
 use anyhow::Result;
 use bytes::Bytes;
-use core::str;
 use dashmap::DashMap;
 use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
@@ -20,7 +18,6 @@ use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::field::debug;
 
 /// returns a raw db entry to persist from the given data
 #[inline]

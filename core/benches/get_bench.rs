@@ -1,4 +1,4 @@
-use core::hydradb::HydraDBBuilder;
+use core::builder::HydraDBBuilder;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
 use std::fs;
@@ -8,7 +8,7 @@ fn setup() -> core::hydradb::HydraDB {
     // 100,000 * 32 bytes ≈ 3.2 MB
     let file_size = 3_200_000;
 
-    let mut db = HydraDBBuilder::new()
+    let db = HydraDBBuilder::new()
         .with_cask("get_bench_data")
         .with_file_limit(file_size)
         .build()
