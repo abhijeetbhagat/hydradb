@@ -1,5 +1,5 @@
-use core::hydradb::HydraDBBuilder;
-use criterion::{Criterion, criterion_group, criterion_main};
+use core::builder::HydraDBBuilder;
+use criterion::{criterion_group, criterion_main, Criterion};
 use std::fs;
 
 fn setup() -> core::hydradb::HydraDB {
