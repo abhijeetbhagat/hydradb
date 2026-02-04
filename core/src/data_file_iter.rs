@@ -46,6 +46,8 @@ impl Iterator for DataFileIterator {
     type Item = Result<DataFileEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let val_pos = self.reader.stream_position().ok()?;
+
         if let Ok(size) = self.reader.read(&mut self.buf)
             && size != 0
         {
@@ -73,7 +75,7 @@ impl Iterator for DataFileIterator {
                 return Some(Err(e.into()));
             }
 
-            let val_pos = self.reader.stream_position().unwrap();
+            // let val_pos = self.reader.stream_position().unwrap();
 
             let mut val = vec![0; vsz as usize];
             if let Err(e) = self.reader.read_exact(&mut val) {
@@ -114,6 +116,8 @@ impl OptimizedDataFileIterator {
     }
 
     pub fn next_into(&mut self, entry: &mut DataFileEntry) -> Option<Result<()>> {
+        let val_pos = self.reader.stream_position().unwrap();
+
         if let Ok(size) = self.reader.read(&mut self.buf)
             && size != 0
         {
@@ -147,7 +151,6 @@ impl OptimizedDataFileIterator {
                 return Some(Err(e.into()));
             }
 
-            let val_pos = self.reader.stream_position().unwrap();
             entry.val_pos = val_pos;
 
             // let mut val = vec![0; vsz as usize];
@@ -209,7 +212,7 @@ mod test {
                 vsz: 4,
                 key: b"abhi".to_vec(),
                 val: b"rust".to_vec(),
-                val_pos: 20
+                val_pos: 0
             }
         );
 
@@ -246,7 +249,7 @@ mod test {
                 vsz: 4,
                 key: b"abhi".to_vec(),
                 val: b"rust".to_vec(),
-                val_pos: 20
+                val_pos: 0
             }
         );
 

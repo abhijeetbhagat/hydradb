@@ -11,7 +11,7 @@ use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
@@ -20,6 +20,7 @@ use std::{
     fs::{DirBuilder, File},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tracing::field::debug;
 
 /// returns a raw db entry to persist from the given data
 #[inline]
@@ -207,14 +208,32 @@ impl HydraDB {
             // file.seek(SeekFrom::Start(val_pos))?;
             // debug!("file pos is {:?}", file.stream_position());
 
-            let mut v = vec![0; val_sz as usize];
-            file.read_exact_at(&mut v, val_pos)?;
+            // read 16 bytes header of the entry
+            let mut header = vec![0; 16];
+            file.read_exact_at(&mut header, val_pos)?;
+
+            let entry_crc = u32::from_be_bytes(header[0..=3].try_into().unwrap());
+            let tstamp = u32::from_be_bytes(header[4..=7].try_into().unwrap());
+            let ksz = u32::from_be_bytes(header[8..=11].try_into().unwrap());
+            let vsz = u32::from_be_bytes(header[12..=15].try_into().unwrap());
+            let mut k = vec![0; ksz as usize];
+            file.read_exact_at(&mut k, val_pos + 16)?;
+            let mut v = vec![0; vsz as usize];
+            file.read_exact_at(&mut v, val_pos + 16 + ksz as u64)?;
+
+            let crc = calc_crc(tstamp, ksz, vsz, &k, &v);
+
+            if entry_crc == crc {
+                Ok(Some(v.into()))
+            } else {
+                println!("file crc {entry_crc}, crc {crc}");
+                Ok(None)
+            }
+
             // let mut f = file.take(val_sz as u64);
 
             // f.read_to_end(&mut v)?;
             // debug!("value is {}", str::from_utf8(&v).unwrap());
-
-            Ok(Some(v.into()))
         } else {
             Ok(None)
         }
@@ -225,6 +244,7 @@ impl HydraDB {
         let k = k.into();
         let v = v.into();
 
+        // write to storage
         let entry = self.put_with_file_size_check(&k, &v)?;
 
         // then write to im
@@ -266,7 +286,7 @@ impl HydraDB {
 
         let file_id = cur_id;
         let ksz = k.len() as u32;
-        let val_pos = writer.last_val_offset + 16 + ksz as u64; // 16 bytes header size
+        let val_pos = writer.last_val_offset; // points to start byte of the crc of this record
         let vsz = v.len() as u32;
         writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
@@ -385,7 +405,7 @@ impl HydraDB {
                         let _ = temp_file.write_all(&entry);
                         temp_file_has_data = true;
 
-                        let val_pos = cur_val_offset + 16 + file_entry.key.len() as u64;
+                        let val_pos = cur_val_offset; // + 16 + file_entry.key.len() as u64;
                         cur_val_offset += entry.len() as u64;
                         let entry = to_hint_entry(
                             file_entry.tstamp,
@@ -448,8 +468,6 @@ mod tests {
 
     use crate::hydradb::HydraDBBuilder;
     use env_logger;
-    use log::debug;
-    use rand::Rng;
 
     #[test]
     fn test_del() {
@@ -486,7 +504,7 @@ mod tests {
         assert_eq!(db.key_dir.len(), 6);
         let e = db.key_dir.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 21);
+        assert_eq!(e.val_pos, 0);
 
         let val = db.get("pooja");
         assert!(val.is_ok());
@@ -508,29 +526,44 @@ mod tests {
 
     #[test]
     fn test_restore() {
+        {
+            let db = HydraDBBuilder::new()
+                .with_cask("restore_test")
+                .with_file_limit(500)
+                .build()
+                .unwrap();
+            db.put("pooja", "kalyaninagar").unwrap();
+            db.put("abhi", "baner").unwrap();
+            db.put("pads", "hinjewadi").unwrap();
+            db.put("jane", "mk").unwrap();
+        }
+
         let db = HydraDBBuilder::new()
-            .with_cask("test")
-            .with_file_limit(60)
+            .with_cask("restore_test")
+            .with_file_limit(500)
             .build()
             .unwrap();
-        assert_eq!(db.key_dir.len(), 6);
+
+        assert_eq!(db.key_dir.len(), 4);
         let e = db.key_dir.get("pooja").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 21);
+        assert_eq!(e.val_pos, 0);
         let e = db.key_dir.get("abhi").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 53);
+        assert_eq!(e.val_pos, 33);
         let e = db.key_dir.get("pads").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 78);
+        assert_eq!(e.val_pos, 58);
         let e = db.key_dir.get("jane").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 155);
+        assert_eq!(e.val_pos, 87);
 
         let val = db.get("pooja");
         assert!(val.is_ok());
         let val = val.unwrap();
         assert_eq!(val, Some("kalyaninagar".into()));
+
+        let _ = fs::remove_dir_all("./restore_test");
     }
 
     #[test]
