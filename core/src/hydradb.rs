@@ -463,7 +463,7 @@ impl HydraDB {
 mod tests {
     use std::fs;
 
-    use crate::hydradb::HydraDBBuilder;
+    use crate::HydraDBBuilder;
     use env_logger;
 
     #[test]
