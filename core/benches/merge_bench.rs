@@ -8,7 +8,7 @@ fn setup() -> core::hydradb::HydraDB {
     let entry_per_file = 100_000;
     let file_size = 3_200_000;
 
-    let mut db = HydraDBBuilder::new()
+    let db = HydraDBBuilder::new()
         .with_cask("merge_bench_data")
         .with_file_limit(file_size)
         .build()

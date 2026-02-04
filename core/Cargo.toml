@@ -19,6 +19,7 @@ rand.workspace = true
 dashmap.workspace = true
 log.workspace = true
 env_logger.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

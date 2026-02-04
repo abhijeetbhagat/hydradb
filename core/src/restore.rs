@@ -1,7 +1,7 @@
+use crate::HydraDBResult;
 use crate::data_file_iter::{DataFileEntry, DataFileIterator};
 use crate::hint_file_iter::{HintFileEntry, HintFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
-use anyhow::Result;
 
 pub trait Restore {
     fn restore(
@@ -10,7 +10,7 @@ pub trait Restore {
         cask: &str,
         active_file_num: usize,
         key_dir: &mut KeyDir,
-    ) -> Result<()>;
+    ) -> HydraDBResult<()>;
 }
 
 pub struct DataFileRestore;
@@ -22,7 +22,7 @@ impl Restore for DataFileRestore {
         cask: &str,
         active_file_num: usize,
         key_dir: &mut KeyDir,
-    ) -> Result<()> {
+    ) -> HydraDBResult<()> {
         let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{active_file_num}"))?;
 
         for DataFileEntry {
@@ -52,7 +52,7 @@ impl Restore for HintFileRestore {
         cask: &str,
         active_file_num: usize,
         key_dir: &mut KeyDir,
-    ) -> Result<()> {
+    ) -> HydraDBResult<()> {
         // if there's a hint file, there's an active file as well.
         // in addition to hint file, process the active file as well.
 

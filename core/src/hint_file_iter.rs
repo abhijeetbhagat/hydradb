@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::HydraDBResult;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ pub struct HintFileEntry {
 }
 
 impl HintFileIterator {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> HydraDBResult<Self> {
         let path: PathBuf = path.as_ref().to_path_buf();
 
         let file = File::options().read(true).open(&path)?;
@@ -32,7 +32,7 @@ impl HintFileIterator {
 }
 
 impl Iterator for HintFileIterator {
-    type Item = Result<HintFileEntry>;
+    type Item = HydraDBResult<HintFileEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Ok(size) = self.reader.read(&mut self.buf)
