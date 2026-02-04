@@ -207,7 +207,7 @@ impl HydraDB {
             // debug!("file pos is {:?}", file.stream_position());
 
             // read 16 bytes header of the entry
-            let mut header = vec![0; 16];
+            let mut header = [0; 16];
             file.read_exact_at(&mut header, val_pos)?;
 
             let entry_crc = u32::from_be_bytes(header[0..=3].try_into().unwrap());
