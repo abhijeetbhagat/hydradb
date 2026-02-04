@@ -473,7 +473,7 @@ mod tests {
             .is_test(true) // Ensures output is captured by cargo test
             .try_init();
         let mut db = HydraDBBuilder::new()
-            .with_cask("names-to-addresses")
+            .with_cask("logging_and_reading_test")
             .build()
             .unwrap();
         db.put("pooja", "kalyaninagar").unwrap();
@@ -503,13 +503,13 @@ mod tests {
         let val = val.unwrap();
         assert_eq!(val, Some("baner".into()));
 
-        let _ = fs::remove_dir_all("./names-to-addresses");
+        let _ = fs::remove_dir_all("./logging_and_reading_test");
     }
 
     #[test]
     fn test_restore() {
         let db = HydraDBBuilder::new()
-            .with_cask("test")
+            .with_cask("restore_test")
             .with_file_limit(60)
             .build()
             .unwrap();
@@ -531,12 +531,14 @@ mod tests {
         assert!(val.is_ok());
         let val = val.unwrap();
         assert_eq!(val, Some("kalyaninagar".into()));
+
+        let _ = fs::remove_dir_all("./restore_test");
     }
 
     #[test]
     fn test_list_keys() {
         let db = HydraDBBuilder::new()
-            .with_cask("names-to-addresses")
+            .with_cask("list_keys_test")
             .with_file_limit(60)
             .build()
             .unwrap();
@@ -551,7 +553,7 @@ mod tests {
         let keys = keys.unwrap();
         assert_eq!(keys.len(), 6);
 
-        let _ = fs::remove_dir_all("./names-to-addresses");
+        let _ = fs::remove_dir_all("./list_keys_test");
     }
 
     #[test]
