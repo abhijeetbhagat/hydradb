@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::HydraDBResult;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -31,7 +31,7 @@ pub struct DataFileIterator {
 }
 
 impl DataFileIterator {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> HydraDBResult<Self> {
         let path: PathBuf = path.as_ref().to_path_buf();
         let file = File::options().read(true).open(&path)?;
 
@@ -43,7 +43,7 @@ impl DataFileIterator {
 }
 
 impl Iterator for DataFileIterator {
-    type Item = Result<DataFileEntry>;
+    type Item = HydraDBResult<DataFileEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let val_pos = self.reader.stream_position().ok()?;
@@ -105,7 +105,7 @@ pub struct OptimizedDataFileIterator {
 }
 
 impl OptimizedDataFileIterator {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> HydraDBResult<Self> {
         let path: PathBuf = path.as_ref().to_path_buf();
         let file = File::options().read(true).open(&path)?;
 
@@ -115,7 +115,7 @@ impl OptimizedDataFileIterator {
         })
     }
 
-    pub fn next_into(&mut self, entry: &mut DataFileEntry) -> Option<Result<()>> {
+    pub fn next_into(&mut self, entry: &mut DataFileEntry) -> Option<HydraDBResult<()>> {
         let val_pos = self.reader.stream_position().unwrap();
 
         if let Ok(size) = self.reader.read(&mut self.buf)

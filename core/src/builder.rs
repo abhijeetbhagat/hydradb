@@ -1,5 +1,5 @@
+use crate::error::HydraDBResult;
 use crate::hydradb::HydraDB;
-use anyhow::Result;
 
 #[derive(Default)]
 pub struct HydraDBBuilder {
@@ -32,7 +32,7 @@ impl HydraDBBuilder {
         self
     }
 
-    pub fn build(self) -> Result<HydraDB> {
+    pub fn build(self) -> HydraDBResult<HydraDB> {
         HydraDB::new(
             self.cask.unwrap(),
             self.max_file_size_threshold,

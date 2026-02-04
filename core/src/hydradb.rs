@@ -2,7 +2,8 @@ use crate::data_file_iter::{DataFileEntry, OptimizedDataFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
 use crate::utils::calc_crc;
-use anyhow::Result;
+// use anyhow::Result;
+use crate::error::{HydraDBError, HydraDBResult};
 use bytes::Bytes;
 use dashmap::DashMap;
 use log::debug;
@@ -92,7 +93,7 @@ impl HydraDB {
         namespace: T,
         max_file_size_threshold: u64,
         cache_size: usize,
-    ) -> Result<Self> {
+    ) -> HydraDBResult<Self> {
         let namespace = namespace.into();
 
         let cur_id;
@@ -157,7 +158,7 @@ impl HydraDB {
     }
 
     /// builds the in-mem store by scanning the data files
-    fn build_key_dir(&mut self) -> Result<()> {
+    fn build_key_dir(&mut self) -> HydraDBResult<()> {
         let restorer: Box<dyn Restore> = if Path::new(&format!("{}/hint", self.cur_cask)).exists() {
             Box::new(HintFileRestore)
         } else {
@@ -177,7 +178,7 @@ impl HydraDB {
     }
 
     /// gets the value, if present, for the given key `k`
-    pub fn get(&self, k: impl AsRef<[u8]>) -> Result<Option<Bytes>> {
+    pub fn get(&self, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
         if let Some(in_mem_entry) = self.key_dir.get(k) {
             let KeyDirEntry {
                 file_id,
@@ -224,7 +225,7 @@ impl HydraDB {
                 Ok(Some(v.into()))
             } else {
                 println!("file crc {entry_crc}, crc {crc}");
-                Ok(None)
+                Err(HydraDBError::FileCorruptionError(file_id, entry_crc, crc))
             }
 
             // let mut f = file.take(val_sz as u64);
@@ -237,7 +238,7 @@ impl HydraDB {
     }
 
     /// puts the given key-value pair under the set namespace
-    pub fn put(&self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> Result<()> {
+    pub fn put(&self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> HydraDBResult<()> {
         let k = k.into();
         let v = v.into();
 
@@ -250,7 +251,7 @@ impl HydraDB {
         Ok(())
     }
 
-    fn put_with_file_size_check(&self, k: &[u8], v: &[u8]) -> Result<KeyDirEntry> {
+    fn put_with_file_size_check(&self, k: &[u8], v: &[u8]) -> HydraDBResult<KeyDirEntry> {
         // allow only one writer at a time
         let mut writer = self.writer.lock().unwrap();
 
@@ -286,7 +287,7 @@ impl HydraDB {
         let val_pos = writer.last_val_offset; // points to start byte of the crc of this record
         let vsz = v.len() as u32;
         writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
-        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u32;
+        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
         let crc = calc_crc(tstamp, ksz, vsz, k, v);
 
         let entry = to_db_entry(crc, tstamp, k, v);
@@ -300,7 +301,7 @@ impl HydraDB {
     }
 
     /// deletes the given key
-    pub fn del(&self, k: impl AsRef<[u8]>) -> Result<bool> {
+    pub fn del(&self, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
         // TODO if file almost full, then create new file, bump id
         let k = k.as_ref();
         let k_exists = self.key_dir.has_key(k);
@@ -316,7 +317,7 @@ impl HydraDB {
     }
 
     /// merges old files into a single file & generates a hint file
-    pub fn merge(&self) -> Result<()> {
+    pub fn merge(&self) -> HydraDBResult<()> {
         // note: merging may run concurrently with a write operation
         //
         // the goal of merge is to create a hint file.
@@ -487,7 +488,7 @@ mod tests {
         let _ = env_logger::builder()
             .is_test(true) // Ensures output is captured by cargo test
             .try_init();
-        let mut db = HydraDBBuilder::new()
+        let db = HydraDBBuilder::new()
             .with_cask("names-to-addresses")
             .build()
             .unwrap();

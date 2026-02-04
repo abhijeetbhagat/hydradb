@@ -1,6 +1,7 @@
 pub mod app;
 pub mod builder;
 pub mod data_file_iter;
+pub mod error;
 pub mod hint_file_iter;
 pub mod hydradb;
 pub mod key_dir;
@@ -14,6 +15,7 @@ use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use builder::HydraDBBuilder;
+use error::{HydraDBError, HydraDBResult};
 use hydradb::HydraDB;
 use openraft::BasicNode;
 use openraft::Config;
