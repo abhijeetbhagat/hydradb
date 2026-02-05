@@ -153,7 +153,7 @@ impl HydraDB {
             file_cache: DashMap::with_capacity(cache_size),
         };
 
-        let _ = db.build_key_dir();
+        db.build_key_dir()?;
 
         Ok(db)
     }
@@ -295,8 +295,8 @@ impl HydraDB {
 
         let entry = to_db_entry(0, crc, tstamp, k, v);
 
-        let _ = writer.writer.as_mut().unwrap().write_all(&entry);
-        let _ = writer.writer.as_mut().unwrap().flush();
+        writer.writer.as_mut().unwrap().write_all(&entry)?;
+        writer.writer.as_mut().unwrap().flush()?;
 
         writer.cur_file_size += 17u64 + k.len() as u64 + v.len() as u64;
 
@@ -307,60 +307,61 @@ impl HydraDB {
     pub fn del(&self, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
         // TODO if file almost full, then create new file, bump id
         let k = k.as_ref();
+
+        // mark entry as deleted
+        let k_exists = self.mark_deleted(k)?;
+
+        Ok(k_exists)
+    }
+
+    fn mark_deleted(&self, k: &[u8]) -> HydraDBResult<bool> {
+        // allow only one writer at a time
+        let mut writer = self.writer.lock().unwrap();
+
         let k_exists = self.key_dir.has_key(k);
         if k_exists {
-            // mark entry as deleted
-            let _ = self.mark_deleted(k)?;
+            debug!("cur file size {}", writer.cur_file_size);
+            if (17u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
+                // SAFETY: it is safe to use relaxed ordering here since we are locking
+                // the writer at the beginning of this method. therefore, everything after
+                // will be sequential execution
+                let old_cur_id = self
+                    .cur_id
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let new_cur_id = old_cur_id + 1;
+
+                let file = File::options()
+                    .create(true)
+                    .append(true)
+                    .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
+
+                *writer = WriterState {
+                    writer: Some(BufWriter::new(file)),
+                    last_val_offset: 0,
+                    cur_file_size: 0,
+                };
+                new_cur_id
+            } else {
+                self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+            };
+
+            let ksz = k.len() as u32;
+            writer.last_val_offset += 17 + ksz as u64; // 17 bytes header size
+            let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+            let crc = calc_crc(tstamp, ksz, 0, k, &[]);
+
+            let entry = to_db_entry(1, crc, tstamp, k, &[]);
+
+            let _ = writer.writer.as_mut().unwrap().write_all(&entry);
+            let _ = writer.writer.as_mut().unwrap().flush();
+
+            writer.cur_file_size += 17u64 + k.len() as u64;
 
             // then del from im
             self.key_dir.del(k);
         }
 
         Ok(k_exists)
-    }
-
-    fn mark_deleted(&self, k: &[u8]) -> HydraDBResult<()> {
-        // allow only one writer at a time
-        let mut writer = self.writer.lock().unwrap();
-
-        debug!("cur file size {}", writer.cur_file_size);
-        if (17u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
-            // SAFETY: it is safe to use relaxed ordering here since we are locking
-            // the writer at the beginning of this method. therefore, everything after
-            // will be sequential execution
-            let old_cur_id = self
-                .cur_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let new_cur_id = old_cur_id + 1;
-
-            let file = File::options()
-                .create(true)
-                .append(true)
-                .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
-
-            *writer = WriterState {
-                writer: Some(BufWriter::new(file)),
-                last_val_offset: 0,
-                cur_file_size: 0,
-            };
-            new_cur_id
-        } else {
-            self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
-        };
-
-        let ksz = k.len() as u32;
-        writer.last_val_offset += 17 + ksz as u64; // 17 bytes header size
-        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
-        let crc = calc_crc(tstamp, ksz, 0, k, &[]);
-
-        let entry = to_db_entry(1, crc, tstamp, k, &[]);
-
-        let _ = writer.writer.as_mut().unwrap().write_all(&entry);
-        let _ = writer.writer.as_mut().unwrap().flush();
-
-        writer.cur_file_size += 17u64 + k.len() as u64;
-
-        Ok(())
     }
 
     /// merges old files into a single file & generates a hint file
@@ -448,7 +449,7 @@ impl HydraDB {
                             &file_entry.key,
                             &file_entry.val,
                         );
-                        let _ = temp_file.write_all(&entry);
+                        temp_file.write_all(&entry)?;
                         temp_file_has_data = true;
 
                         let val_pos = cur_val_offset; // + 17 + file_entry.key.len() as u64;
@@ -459,7 +460,7 @@ impl HydraDB {
                             &file_entry.val,
                             val_pos,
                         );
-                        let _ = hint_file.write_all(&entry);
+                        hint_file.write_all(&entry)?;
 
                         self.key_dir.put(
                             file_entry.key.clone(),
@@ -490,10 +491,10 @@ impl HydraDB {
         debug!("cur id {}", cur_id);
 
         if temp_file_has_data {
-            let _res = fs::rename(
+            fs::rename(
                 format!("{}/temp", self.cur_cask),
                 format!("{}/{}", self.cur_cask, cur_id - 1),
-            );
+            )?;
         } else {
             fs::remove_file(format!("{}/temp", self.cur_cask))?;
             fs::remove_file(format!("{}/hint", self.cur_cask))?;
