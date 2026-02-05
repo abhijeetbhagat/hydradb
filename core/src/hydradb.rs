@@ -22,9 +22,10 @@ use std::{
 
 /// returns a raw db entry to persist from the given data
 #[inline]
-fn to_db_entry(crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
-    // crc + tstamp + ksz + vsz + key + val
-    let mut o = Vec::with_capacity(4 + 4 + 4 + 4 + k.len() + v.len());
+fn to_db_entry(is_deleted: u8, crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
+    // is_deleted + crc + tstamp + ksz + vsz + key + val
+    let mut o = Vec::with_capacity(1 + 4 + 4 + 4 + 4 + k.len() + v.len());
+    o.push(is_deleted);
 
     let kl = k.len() as u32;
     let vl = v.len() as u32;
@@ -206,18 +207,20 @@ impl HydraDB {
             // file.seek(SeekFrom::Start(val_pos))?;
             // debug!("file pos is {:?}", file.stream_position());
 
-            // read 16 bytes header of the entry
-            let mut header = [0; 16];
+            // read 17 bytes header of the entry
+            let mut header = [0; 17];
             file.read_exact_at(&mut header, val_pos)?;
 
-            let entry_crc = u32::from_be_bytes(header[0..=3].try_into().unwrap());
-            let tstamp = u32::from_be_bytes(header[4..=7].try_into().unwrap());
-            let ksz = u32::from_be_bytes(header[8..=11].try_into().unwrap());
-            let vsz = u32::from_be_bytes(header[12..=15].try_into().unwrap());
+            let entry_crc = u32::from_be_bytes(header[1..=4].try_into().unwrap());
+            let tstamp = u32::from_be_bytes(header[5..=8].try_into().unwrap());
+            let ksz = u32::from_be_bytes(header[9..=12].try_into().unwrap());
+            let vsz = u32::from_be_bytes(header[13..=16].try_into().unwrap());
+            // todo: if we know that ksz is going to be atmost N bytes long,
+            // we can either allocate on stack or use smallvec
             let mut k = vec![0; ksz as usize];
-            file.read_exact_at(&mut k, val_pos + 16)?;
+            file.read_exact_at(&mut k, val_pos + 17)?;
             let mut v = vec![0; vsz as usize];
-            file.read_exact_at(&mut v, val_pos + 16 + ksz as u64)?;
+            file.read_exact_at(&mut v, val_pos + 17 + ksz as u64)?;
 
             let crc = calc_crc(tstamp, ksz, vsz, &k, &v);
 
@@ -256,7 +259,7 @@ impl HydraDB {
         let mut writer = self.writer.lock().unwrap();
 
         debug!("cur file size {}", writer.cur_file_size);
-        let cur_id = if (16u64 + k.len() as u64 + v.len() as u64 + writer.cur_file_size)
+        let cur_id = if (17u64 + k.len() as u64 + v.len() as u64 + writer.cur_file_size)
             >= self.max_file_size_threshold
         {
             // SAFETY: it is safe to use relaxed ordering here since we are locking
@@ -286,16 +289,16 @@ impl HydraDB {
         let ksz = k.len() as u32;
         let val_pos = writer.last_val_offset; // points to start byte of the crc of this record
         let vsz = v.len() as u32;
-        writer.last_val_offset += 16 + ksz as u64 + vsz as u64; // 16 bytes header size
+        writer.last_val_offset += 17 + ksz as u64 + vsz as u64; // 17 bytes header size
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
         let crc = calc_crc(tstamp, ksz, vsz, k, v);
 
-        let entry = to_db_entry(crc, tstamp, k, v);
+        let entry = to_db_entry(0, crc, tstamp, k, v);
 
         let _ = writer.writer.as_mut().unwrap().write_all(&entry);
         let _ = writer.writer.as_mut().unwrap().flush();
 
-        writer.cur_file_size += 16u64 + k.len() as u64 + v.len() as u64;
+        writer.cur_file_size += 17u64 + k.len() as u64 + v.len() as u64;
 
         Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
     }
@@ -307,13 +310,57 @@ impl HydraDB {
         let k_exists = self.key_dir.has_key(k);
         if k_exists {
             // mark entry as deleted
-            let _ = self.put_with_file_size_check(k, b"TOMBSTONE")?;
+            let _ = self.mark_deleted(k)?;
 
             // then del from im
             self.key_dir.del(k);
         }
 
         Ok(k_exists)
+    }
+
+    fn mark_deleted(&self, k: &[u8]) -> HydraDBResult<()> {
+        // allow only one writer at a time
+        let mut writer = self.writer.lock().unwrap();
+
+        debug!("cur file size {}", writer.cur_file_size);
+        if (17u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
+            // SAFETY: it is safe to use relaxed ordering here since we are locking
+            // the writer at the beginning of this method. therefore, everything after
+            // will be sequential execution
+            let old_cur_id = self
+                .cur_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let new_cur_id = old_cur_id + 1;
+
+            let file = File::options()
+                .create(true)
+                .append(true)
+                .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
+
+            *writer = WriterState {
+                writer: Some(BufWriter::new(file)),
+                last_val_offset: 0,
+                cur_file_size: 0,
+            };
+            new_cur_id
+        } else {
+            self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        let ksz = k.len() as u32;
+        writer.last_val_offset += 17 + ksz as u64; // 17 bytes header size
+        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+        let crc = calc_crc(tstamp, ksz, 0, k, &[]);
+
+        let entry = to_db_entry(1, crc, tstamp, k, &[]);
+
+        let _ = writer.writer.as_mut().unwrap().write_all(&entry);
+        let _ = writer.writer.as_mut().unwrap().flush();
+
+        writer.cur_file_size += 17u64 + k.len() as u64;
+
+        Ok(())
     }
 
     /// merges old files into a single file & generates a hint file
@@ -395,6 +442,7 @@ impl HydraDB {
                         // if yes, then the entry is latest and can be recorded in the hint file
                         // and the merged file
                         let entry = to_db_entry(
+                            0,
                             file_entry.crc,
                             file_entry.tstamp,
                             &file_entry.key,
@@ -403,7 +451,7 @@ impl HydraDB {
                         let _ = temp_file.write_all(&entry);
                         temp_file_has_data = true;
 
-                        let val_pos = cur_val_offset; // + 16 + file_entry.key.len() as u64;
+                        let val_pos = cur_val_offset; // + 17 + file_entry.key.len() as u64;
                         cur_val_offset += entry.len() as u64;
                         let entry = to_hint_entry(
                             file_entry.tstamp,
@@ -550,13 +598,13 @@ mod tests {
         assert_eq!(e.val_pos, 0);
         let e = db.key_dir.get("abhi").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 33);
+        assert_eq!(e.val_pos, 34);
         let e = db.key_dir.get("pads").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 58);
+        assert_eq!(e.val_pos, 60);
         let e = db.key_dir.get("jane").unwrap();
         assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 87);
+        assert_eq!(e.val_pos, 90);
 
         let val = db.get("pooja");
         assert!(val.is_ok());

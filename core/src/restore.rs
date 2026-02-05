@@ -26,6 +26,7 @@ impl Restore for DataFileRestore {
         let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{active_file_num}"))?;
 
         for DataFileEntry {
+            is_deleted: _is_deleted,
             crc: _crc,
             tstamp,
             ksz: _ksz,
@@ -75,6 +76,7 @@ impl Restore for HintFileRestore {
         let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{active_file_num}"))?;
 
         for DataFileEntry {
+            is_deleted: _is_deleted,
             crc: _crc,
             tstamp,
             ksz: _ksz,

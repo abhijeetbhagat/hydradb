@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub struct DataFileEntry {
+    pub is_deleted: u8,
     pub crc: u32,
     pub tstamp: u32,
     pub ksz: u32,
@@ -26,7 +27,7 @@ impl DataFileEntry {
 
 /// iterates over a data file
 pub struct DataFileIterator {
-    buf: [u8; 16], // 4 crc + 4 tstamp + 4 ksz + 4 vsz
+    buf: [u8; 17], // 1 is_deleted + 4 crc + 4 tstamp + 4 ksz + 4 vsz
     reader: BufReader<File>,
 }
 
@@ -36,7 +37,7 @@ impl DataFileIterator {
         let file = File::options().read(true).open(&path)?;
 
         Ok(Self {
-            buf: [0; 16],
+            buf: [0; 17],
             reader: BufReader::new(file),
         })
     }
@@ -51,8 +52,10 @@ impl Iterator for DataFileIterator {
         if let Ok(size) = self.reader.read(&mut self.buf)
             && size != 0
         {
-            let mut i = 0;
-            let mut j = 3;
+            let is_deleted = self.buf[0];
+
+            let mut i = 1;
+            let mut j = 4;
 
             let crc = u32::from_be_bytes(self.buf[i..=j].try_into().unwrap());
             i = j + 1;
@@ -83,6 +86,7 @@ impl Iterator for DataFileIterator {
             }
 
             let entry = DataFileEntry {
+                is_deleted,
                 crc,
                 tstamp,
                 ksz,
@@ -100,7 +104,7 @@ impl Iterator for DataFileIterator {
 }
 
 pub struct OptimizedDataFileIterator {
-    buf: [u8; 16], // 4 crc + 4 tstamp + 4 ksz + 4 vsz
+    buf: [u8; 17], // 4 crc + 4 tstamp + 4 ksz + 4 vsz
     reader: BufReader<File>,
 }
 
@@ -110,7 +114,7 @@ impl OptimizedDataFileIterator {
         let file = File::options().read(true).open(&path)?;
 
         Ok(Self {
-            buf: [0; 16],
+            buf: [0; 17],
             reader: BufReader::new(file),
         })
     }
@@ -121,8 +125,10 @@ impl OptimizedDataFileIterator {
         if let Ok(size) = self.reader.read(&mut self.buf)
             && size != 0
         {
-            let mut i = 0;
-            let mut j = 3;
+            let is_deleted = self.buf[0];
+
+            let mut i = 1;
+            let mut j = 4;
 
             let crc = u32::from_be_bytes(self.buf[i..=j].try_into().unwrap());
             i = j + 1;
@@ -138,6 +144,7 @@ impl OptimizedDataFileIterator {
 
             let vsz = u32::from_be_bytes(self.buf[i..=j].try_into().unwrap());
 
+            entry.is_deleted = is_deleted;
             entry.crc = crc;
             entry.tstamp = tstamp;
             entry.ksz = ksz;
@@ -191,7 +198,7 @@ mod test {
             .open("data_file_iter_test")
             .unwrap();
 
-        let mut data = vec![];
+        let mut data = vec![1];
         data.extend_from_slice(&0u32.to_be_bytes());
         data.extend_from_slice(&1u32.to_be_bytes());
         data.extend_from_slice(&4u32.to_be_bytes());
@@ -206,6 +213,7 @@ mod test {
         assert_eq!(
             entry,
             DataFileEntry {
+                is_deleted: 1,
                 crc: 0,
                 tstamp: 1,
                 ksz: 4,
@@ -227,7 +235,7 @@ mod test {
             .open("opt_data_file_iter_test")
             .unwrap();
 
-        let mut data = vec![];
+        let mut data = vec![1];
         data.extend_from_slice(&0u32.to_be_bytes());
         data.extend_from_slice(&1u32.to_be_bytes());
         data.extend_from_slice(&4u32.to_be_bytes());
@@ -243,6 +251,7 @@ mod test {
         assert_eq!(
             entry,
             DataFileEntry {
+                is_deleted: 1,
                 crc: 0,
                 tstamp: 1,
                 ksz: 4,
