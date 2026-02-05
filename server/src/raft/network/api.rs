@@ -4,8 +4,8 @@ use actix_web::web;
 use actix_web::web::Data;
 use web::Json;
 
-use crate::Request;
-use crate::app::App;
+use crate::raft::Request;
+use crate::raft::app::App;
 
 /**
  * Application API

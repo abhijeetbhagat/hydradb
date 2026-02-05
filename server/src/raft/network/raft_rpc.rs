@@ -6,9 +6,9 @@ use openraft::raft::AppendEntriesRequest;
 use openraft::raft::InstallSnapshotRequest;
 use openraft::raft::VoteRequest;
 
-use crate::NodeId;
-use crate::TypeConfig;
-use crate::app::App;
+use crate::raft::NodeId;
+use crate::raft::TypeConfig;
+use crate::raft::app::App;
 
 // --- Raft communication
 

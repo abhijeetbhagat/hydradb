@@ -1,5 +1,5 @@
-use crate::HydraDBResult;
 use crate::data_file_iter::{DataFileEntry, DataFileIterator};
+use crate::error::HydraDBResult;
 use crate::hint_file_iter::{HintFileEntry, HintFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 

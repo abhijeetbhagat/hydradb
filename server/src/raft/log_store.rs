@@ -1,5 +1,4 @@
-use crate::NodeId;
-use crate::TypeConfig;
+use super::{NodeId, TypeConfig};
 use std::fmt::Debug;
 use std::io;
 use std::ops::Bound;
@@ -244,7 +243,7 @@ mod impl_log_store {
     use std::fmt::Debug;
     use std::ops::RangeBounds;
 
-    use crate::NodeId;
+    use crate::raft::NodeId;
     use openraft::Entry;
     use openraft::LogId;
     use openraft::LogState;
@@ -254,8 +253,8 @@ mod impl_log_store {
     use openraft::storage::LogFlushed;
     use openraft::storage::RaftLogStorage;
 
-    use crate::TypeConfig;
-    use crate::log_store::LogStore;
+    use crate::raft::TypeConfig;
+    use crate::raft::log_store::LogStore;
 
     impl RaftLogReader<TypeConfig> for LogStore
     where

@@ -1,4 +1,4 @@
-use crate::HydraDBResult;
+use crate::error::HydraDBResult;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};

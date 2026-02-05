@@ -10,8 +10,8 @@ use openraft::BasicNode;
 use openraft::RaftMetrics;
 use openraft::error::Infallible;
 
-use crate::NodeId;
-use crate::app::App;
+use crate::raft::NodeId;
+use crate::raft::app::App;
 
 // --- Cluster management
 

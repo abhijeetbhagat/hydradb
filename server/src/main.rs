@@ -1,4 +1,5 @@
-use core::start_raft_node;
+mod raft;
+
 use log::info;
 
 use anyhow::Result;
@@ -27,5 +28,5 @@ async fn main() -> Result<()> {
         args.id, args.port
     );
 
-    start_raft_node(args.id, args.port, args.namespace).await
+    raft::start_raft_node(args.id, args.port, args.namespace).await
 }

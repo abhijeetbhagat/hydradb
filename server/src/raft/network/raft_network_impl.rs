@@ -15,9 +15,9 @@ use openraft::raft::VoteResponse;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::NodeId;
-use crate::TypeConfig;
-use crate::typ;
+use crate::raft::NodeId;
+use crate::raft::TypeConfig;
+use crate::raft::typ;
 
 /// Makes outbound calls to the raft api
 pub struct Network {}
