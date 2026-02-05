@@ -245,16 +245,6 @@ impl HydraDB {
         let k = k.into();
         let v = v.into();
 
-        // write to storage
-        let entry = self.put_with_file_size_check(&k, &v)?;
-
-        // then write to im
-        self.key_dir.put(k, entry);
-
-        Ok(())
-    }
-
-    fn put_with_file_size_check(&self, k: &[u8], v: &[u8]) -> HydraDBResult<KeyDirEntry> {
         // allow only one writer at a time
         let mut writer = self.writer.lock().unwrap();
 
@@ -291,16 +281,22 @@ impl HydraDB {
         let vsz = v.len() as u32;
         writer.last_val_offset += 17 + ksz as u64 + vsz as u64; // 17 bytes header size
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
-        let crc = calc_crc(tstamp, ksz, vsz, k, v);
+        let crc = calc_crc(tstamp, ksz, vsz, &k, &v);
 
-        let entry = to_db_entry(0, crc, tstamp, k, v);
+        let entry = to_db_entry(0, crc, tstamp, &k, &v);
 
         writer.writer.as_mut().unwrap().write_all(&entry)?;
         writer.writer.as_mut().unwrap().flush()?;
 
         writer.cur_file_size += 17u64 + k.len() as u64 + v.len() as u64;
 
-        Ok(KeyDirEntry::new(file_id, vsz, val_pos, tstamp))
+        // then write to im
+        self.key_dir.put(
+            k.to_owned(),
+            KeyDirEntry::new(file_id, vsz, val_pos, tstamp),
+        );
+
+        Ok(())
     }
 
     /// deletes the given key
