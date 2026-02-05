@@ -76,18 +76,18 @@ impl Restore for HintFileRestore {
         let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{active_file_num}"))?;
 
         for DataFileEntry {
-            is_deleted: _is_deleted,
+            is_deleted,
             crc: _crc,
             tstamp,
             ksz: _ksz,
             vsz,
             key,
-            val,
+            val: _val,
             val_pos,
         } in file_iter.flatten()
         {
             // if entry is deleted, then we remove it from key_dir
-            if str::from_utf8(&val).unwrap() == "TOMBSTONE" {
+            if is_deleted == 1 {
                 key_dir.del(&key);
             } else {
                 // we either insert a key that doesn't exist or overwrite it
