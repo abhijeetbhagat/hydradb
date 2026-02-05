@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn test_del() {
         let db = HydraDBBuilder::new()
-            .with_cask("del")
+            .with_cask("del_test")
             .with_file_limit(60)
             .build()
             .unwrap();
@@ -528,7 +528,7 @@ mod tests {
 
         assert_eq!(db.key_dir.len(), 1);
 
-        let _ = fs::remove_dir_all("./del");
+        let _ = fs::remove_dir_all("./del_test");
     }
 
     #[test]
