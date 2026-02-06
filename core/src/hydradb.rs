@@ -207,7 +207,7 @@ impl HydraDB {
             // file.seek(SeekFrom::Start(val_pos))?;
             // debug!("file pos is {:?}", file.stream_position());
 
-            // read 17 bytes header of the entry
+            // read the entire entry at once
             let entry_len = 17 + k.as_ref().len() + val_sz as usize;
             let mut entry = vec![0; entry_len];
             file.read_exact_at(&mut entry, val_pos)?;
