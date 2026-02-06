@@ -762,15 +762,21 @@ mod tests {
 
             let result = db.merge();
             assert!(result.is_ok());
+            assert_eq!(db.get_active_file(), 1);
         }
         // the keydir should be now gone
 
         // restore from hint file
-        let _ = HydraDBBuilder::new()
+        let db = HydraDBBuilder::new()
             .with_cask("hint_file_restore_test")
             .with_file_limit(60)
             .build()
             .unwrap();
+
+        let val = db.get("abhi");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert_eq!(val, Some("rust".into()));
 
         let _ = fs::remove_dir_all("./hint_file_restore_test");
     }
