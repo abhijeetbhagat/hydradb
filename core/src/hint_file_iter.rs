@@ -35,9 +35,7 @@ impl Iterator for HintFileIterator {
     type Item = HydraDBResult<HintFileEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(size) = self.reader.read(&mut self.buf)
-            && size != 0
-        {
+        if self.reader.read_exact(&mut self.buf).is_ok() {
             let mut i = 0;
             let mut j = 3;
 

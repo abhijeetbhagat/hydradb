@@ -180,10 +180,10 @@ impl HydraDB {
 
     /// gets the value, if present, for the given key `k`
     pub fn get(&self, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
-        if let Some(in_mem_entry) = self.key_dir.get(k) {
+        if let Some(in_mem_entry) = self.key_dir.get(&k) {
             let KeyDirEntry {
                 file_id,
-                val_sz: _val_sz,
+                val_sz,
                 val_pos,
                 tstamp: _,
             } = in_mem_entry;
@@ -208,24 +208,34 @@ impl HydraDB {
             // debug!("file pos is {:?}", file.stream_position());
 
             // read 17 bytes header of the entry
-            let mut header = [0; 17];
-            file.read_exact_at(&mut header, val_pos)?;
+            let entry_len = 17 + k.as_ref().len() + val_sz as usize;
+            let mut entry = vec![0; entry_len];
+            file.read_exact_at(&mut entry, val_pos)?;
 
-            let entry_crc = u32::from_be_bytes(header[1..=4].try_into().unwrap());
-            let tstamp = u32::from_be_bytes(header[5..=8].try_into().unwrap());
-            let ksz = u32::from_be_bytes(header[9..=12].try_into().unwrap());
-            let vsz = u32::from_be_bytes(header[13..=16].try_into().unwrap());
+            let entry_crc = u32::from_be_bytes(entry[1..=4].try_into().unwrap());
+            let tstamp = u32::from_be_bytes(entry[5..=8].try_into().unwrap());
+            let ksz = u32::from_be_bytes(entry[9..=12].try_into().unwrap());
+            let vsz = u32::from_be_bytes(entry[13..=16].try_into().unwrap());
             // todo: if we know that ksz is going to be atmost N bytes long,
             // we can either allocate on stack or use smallvec
-            let mut k = vec![0; ksz as usize];
-            file.read_exact_at(&mut k, val_pos + 17)?;
-            let mut v = vec![0; vsz as usize];
-            file.read_exact_at(&mut v, val_pos + 17 + ksz as u64)?;
+            // let mut k = vec![0; ksz as usize];
+            // file.read_exact_at(&mut k, val_pos + 17)?;
+            // let mut v = vec![0; vsz as usize];
+            // file.read_exact_at(&mut v, val_pos + 17 + ksz as u64)?;
 
-            let crc = calc_crc(tstamp, ksz, vsz, &k, &v);
+            let k_start = 17;
+            let k_end = 17 + ksz as usize;
+            let v_end = k_end + vsz as usize;
+            let crc = calc_crc(
+                tstamp,
+                ksz,
+                vsz,
+                &entry[k_start..k_end],
+                &entry[k_end..v_end],
+            );
 
             if entry_crc == crc {
-                Ok(Some(v.into()))
+                Ok(Some(Bytes::copy_from_slice(&entry[k_end..v_end])))
             } else {
                 println!("file crc {entry_crc}, crc {crc}");
                 Err(HydraDBError::FileCorruptionError(file_id, entry_crc, crc))

@@ -49,9 +49,7 @@ impl Iterator for DataFileIterator {
     fn next(&mut self) -> Option<Self::Item> {
         let val_pos = self.reader.stream_position().ok()?;
 
-        if let Ok(size) = self.reader.read(&mut self.buf)
-            && size != 0
-        {
+        if self.reader.read_exact(&mut self.buf).is_ok() {
             let is_deleted = self.buf[0];
 
             let mut i = 1;
@@ -122,9 +120,7 @@ impl OptimizedDataFileIterator {
     pub fn next_into(&mut self, entry: &mut DataFileEntry) -> Option<HydraDBResult<()>> {
         let val_pos = self.reader.stream_position().unwrap();
 
-        if let Ok(size) = self.reader.read(&mut self.buf)
-            && size != 0
-        {
+        if self.reader.read_exact(&mut self.buf).is_ok() {
             let is_deleted = self.buf[0];
 
             let mut i = 1;
