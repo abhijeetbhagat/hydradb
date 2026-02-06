@@ -2,6 +2,7 @@ use crate::data_file_iter::{DataFileEntry, DataFileIterator};
 use crate::error::HydraDBResult;
 use crate::hint_file_iter::{HintFileEntry, HintFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
+use std::fs;
 
 pub trait Restore {
     fn restore(
@@ -20,24 +21,48 @@ impl Restore for DataFileRestore {
         &self,
         base_path: &str,
         cask: &str,
-        active_file_num: usize,
+        _active_file_num: usize,
         key_dir: &mut KeyDir,
     ) -> HydraDBResult<()> {
-        let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{active_file_num}"))?;
+        // get all the files in the current cask
+        let mut files: Vec<usize> = fs::read_dir(format!("{base_path}/{cask}"))?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let path = entry.path();
 
-        for DataFileEntry {
-            is_deleted: _is_deleted,
-            crc: _crc,
-            tstamp,
-            ksz: _ksz,
-            vsz,
-            key,
-            val: _val,
-            val_pos,
-        } in file_iter.flatten()
-        {
-            let key_dir_entry = KeyDirEntry::new(active_file_num, vsz, val_pos, tstamp);
-            key_dir.put(key, key_dir_entry);
+                if !path.is_file() {
+                    return None;
+                }
+
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.parse::<usize>().ok())
+            })
+            .collect();
+
+        // sort them in increasing order starting with file lowest number
+        files.sort();
+
+        for file_id in files {
+            let file_iter = DataFileIterator::new(format!("{base_path}/{cask}/{file_id}"))?;
+
+            for DataFileEntry {
+                is_deleted,
+                crc: _crc,
+                tstamp,
+                ksz: _ksz,
+                vsz,
+                key,
+                val: _val,
+                val_pos,
+            } in file_iter.flatten()
+            {
+                // ignore deleted entries
+                if is_deleted == 0 {
+                    let key_dir_entry = KeyDirEntry::new(file_id, vsz, val_pos, tstamp);
+                    key_dir.put(key, key_dir_entry);
+                }
+            }
         }
 
         Ok(())

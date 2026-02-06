@@ -183,7 +183,7 @@ impl HydraDB {
         if let Some(in_mem_entry) = self.key_dir.get(k) {
             let KeyDirEntry {
                 file_id,
-                val_sz,
+                val_sz: _val_sz,
                 val_pos,
                 tstamp: _,
             } = in_mem_entry;
@@ -574,7 +574,7 @@ mod tests {
         {
             let db = HydraDBBuilder::new()
                 .with_cask("restore_test")
-                .with_file_limit(500)
+                .with_file_limit(60)
                 .build()
                 .unwrap();
             db.put("pooja", "kalyaninagar").unwrap();
@@ -585,7 +585,7 @@ mod tests {
 
         let db = HydraDBBuilder::new()
             .with_cask("restore_test")
-            .with_file_limit(500)
+            .with_file_limit(60)
             .build()
             .unwrap();
 
@@ -594,14 +594,14 @@ mod tests {
         assert_eq!(e.file_id, 0);
         assert_eq!(e.val_pos, 0);
         let e = db.key_dir.get("abhi").unwrap();
-        assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 34);
+        assert_eq!(e.file_id, 1);
+        assert_eq!(e.val_pos, 0);
         let e = db.key_dir.get("pads").unwrap();
-        assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 60);
+        assert_eq!(e.file_id, 1);
+        assert_eq!(e.val_pos, 26);
         let e = db.key_dir.get("jane").unwrap();
-        assert_eq!(e.file_id, 0);
-        assert_eq!(e.val_pos, 90);
+        assert_eq!(e.file_id, 2);
+        assert_eq!(e.val_pos, 0);
 
         let val = db.get("pooja");
         assert!(val.is_ok());
