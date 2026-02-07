@@ -3,10 +3,10 @@ pub mod log_store;
 pub mod network;
 pub mod state_machine;
 
-use actix_web::HttpServer;
 use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
+use actix_web::HttpServer;
 use openraft::Config;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -89,7 +89,8 @@ pub async fn start_raft_node(node_id: NodeId, port: u16, namespace: String) -> a
 
     // Create the network layer that will connect and communicate the raft instances and
     // will be used in conjunction with the store created above.
-    let network = network::Network {};
+    let client = reqwest::Client::new();
+    let network = network::Network::new(client);
 
     // Create a local raft instance.
     let raft = openraft::Raft::new(

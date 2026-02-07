@@ -10,32 +10,28 @@ use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
-use std::{
-    fs::{DirBuilder, File},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::fs::{DirBuilder, File};
 
-/// returns a raw db entry to persist from the given data
+/// returns a raw db header entry to persist from the given data
 #[inline]
-fn to_db_entry(is_deleted: u8, crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> Vec<u8> {
-    // is_deleted + crc + tstamp + ksz + vsz + key + val
-    let mut o = Vec::with_capacity(1 + 4 + 4 + 4 + 4 + k.len() + v.len());
-    o.push(is_deleted);
+fn to_db_entry(is_deleted: u8, crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> [u8; 17] {
+    // is_deleted + crc + tstamp + ksz + vsz
+    let mut o = [0; 1 + 4 + 4 + 4 + 4];
+    o[0] = is_deleted;
 
     let kl = k.len() as u32;
     let vl = v.len() as u32;
 
-    o.extend_from_slice(&crc.to_be_bytes());
-    o.extend_from_slice(&tstamp.to_be_bytes());
-    o.extend_from_slice(&kl.to_be_bytes());
-    o.extend_from_slice(&vl.to_be_bytes());
-    o.extend_from_slice(k);
-    o.extend_from_slice(v);
+    o[1..=4].copy_from_slice(&crc.to_be_bytes());
+    o[5..=8].copy_from_slice(&tstamp.to_be_bytes());
+    o[9..=12].copy_from_slice(&kl.to_be_bytes());
+    o[13..=16].copy_from_slice(&vl.to_be_bytes());
     o
 }
 
@@ -296,6 +292,8 @@ impl HydraDB {
         let entry = to_db_entry(0, crc, tstamp, &k, &v);
 
         writer.writer.as_mut().unwrap().write_all(&entry)?;
+        writer.writer.as_mut().unwrap().write_all(&k)?;
+        writer.writer.as_mut().unwrap().write_all(&v)?;
         writer.writer.as_mut().unwrap().flush()?;
 
         writer.cur_file_size += 17u64 + k.len() as u64 + v.len() as u64;
@@ -358,8 +356,10 @@ impl HydraDB {
 
             let entry = to_db_entry(1, crc, tstamp, k, &[]);
 
-            let _ = writer.writer.as_mut().unwrap().write_all(&entry);
-            let _ = writer.writer.as_mut().unwrap().flush();
+            writer.writer.as_mut().unwrap().write_all(&entry)?;
+            writer.writer.as_mut().unwrap().write_all(k)?;
+            writer.writer.as_mut().unwrap().write_all(&[])?;
+            writer.writer.as_mut().unwrap().flush()?;
 
             writer.cur_file_size += 17u64 + k.len() as u64;
 
@@ -456,10 +456,13 @@ impl HydraDB {
                             &file_entry.val,
                         );
                         temp_file.write_all(&entry)?;
+                        temp_file.write_all(&file_entry.key)?;
+                        temp_file.write_all(&file_entry.val)?;
+                        // temp_file.write_all(&entry)?;
                         temp_file_has_data = true;
 
-                        let val_pos = cur_val_offset; // + 17 + file_entry.key.len() as u64;
-                        cur_val_offset += entry.len() as u64;
+                        let val_pos = cur_val_offset;
+                        cur_val_offset += entry.len() as u64 + file_entry.key.len() as u64 + file_entry.val.len() as u64;
                         let entry = to_hint_entry(
                             file_entry.tstamp,
                             &file_entry.key,

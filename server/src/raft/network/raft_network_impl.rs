@@ -1,4 +1,3 @@
-use openraft::BasicNode;
 use openraft::error::InstallSnapshotError;
 use openraft::error::NetworkError;
 use openraft::error::RemoteError;
@@ -12,15 +11,25 @@ use openraft::raft::InstallSnapshotRequest;
 use openraft::raft::InstallSnapshotResponse;
 use openraft::raft::VoteRequest;
 use openraft::raft::VoteResponse;
-use serde::Serialize;
+use openraft::BasicNode;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
+use crate::raft::typ;
 use crate::raft::NodeId;
 use crate::raft::TypeConfig;
-use crate::raft::typ;
+use reqwest::Client;
 
 /// Makes outbound calls to the raft api
-pub struct Network {}
+pub struct Network {
+    client: Client,
+}
+
+impl Network {
+    pub fn new(client: Client) -> Self {
+        Self { client }
+    }
+}
 
 impl Network {
     pub async fn send_rpc<Req, Resp, Err>(
@@ -40,10 +49,9 @@ impl Network {
         let url = format!("http://{}/{}", addr, uri);
         tracing::debug!("send_rpc to url: {}", url);
 
-        let client = reqwest::Client::new();
         tracing::debug!("client is created for: {}", url);
 
-        let resp = client.post(url).json(&req).send().await.map_err(|e| {
+        let resp = self.client.post(url).json(&req).send().await.map_err(|e| {
             // If the error is a connection error, we return `Unreachable` so that connection isn't retried
             // immediately.
             if e.is_connect() {
@@ -69,8 +77,10 @@ impl RaftNetworkFactory<TypeConfig> for Network {
     type Network = NetworkConnection;
 
     async fn new_client(&mut self, target: NodeId, node: &BasicNode) -> Self::Network {
+        let client = reqwest::Client::new();
+
         NetworkConnection {
-            owner: Network {},
+            owner: Network { client },
             target,
             target_node: node.clone(),
         }

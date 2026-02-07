@@ -57,8 +57,11 @@ impl Restore for DataFileRestore {
                 val_pos,
             } in file_iter.flatten()
             {
-                // ignore deleted entries
-                if is_deleted == 0 {
+                // if entry is deleted, then we remove it from key_dir
+                if is_deleted == 1 {
+                    key_dir.del(&key);
+                } else {
+                    // we either insert a key that doesn't exist or overwrite it
                     let key_dir_entry = KeyDirEntry::new(file_id, vsz, val_pos, tstamp);
                     key_dir.put(key, key_dir_entry);
                 }
