@@ -151,18 +151,33 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                 EntryPayload::Blank => res.push(Response::Blank { value: None }),
                 EntryPayload::Normal(ref req) => match req {
                     Request::Put { key, value } => {
-                        sm.data
-                            .put(key.clone(), value.clone())
-                            .map_err(|e| StorageError::IO {
+                        let data = sm.data.clone();
+                        let key = key.clone();
+                        let val = value.clone();
+
+                        let result = tokio::task::spawn_blocking(move || {
+                            data.put(key, val).map_err(|e| StorageError::IO {
                                 source: StorageIOError::new(
-                                    ErrorSubject::Store,
+                                    ErrorSubject::<NodeId>::Store,
                                     ErrorVerb::Write,
                                     &io::Error::other(e),
                                 ),
-                            })?;
+                            })
+                            // Ok::<(), StorageError<NodeId>>(())
+                        })
+                        .await;
+
+                        let _ = result.map_err(|e| StorageError::IO {
+                            source: StorageIOError::new(
+                                ErrorSubject::Store,
+                                ErrorVerb::Write,
+                                &io::Error::other(e),
+                            ),
+                        })?;
+
                         res.push(Response::Put {
                             prev_value: Some(value.clone()),
-                        })
+                        });
                     }
                     Request::Del { key } => {
                         let existed = sm.data.del(key.clone()).map_err(|e| StorageError::IO {
