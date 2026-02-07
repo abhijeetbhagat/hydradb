@@ -3,10 +3,10 @@ pub mod log_store;
 pub mod network;
 pub mod state_machine;
 
+use actix_web::HttpServer;
 use actix_web::middleware;
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
-use actix_web::HttpServer;
 use openraft::Config;
 use serde::{Deserialize, Serialize};
 use std::fmt;

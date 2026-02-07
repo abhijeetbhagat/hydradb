@@ -10,13 +10,13 @@ use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs;
+use std::fs::{DirBuilder, File};
 use std::io::{BufWriter, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::fs::{DirBuilder, File};
 
 /// returns a raw db header entry to persist from the given data
 #[inline]
@@ -462,7 +462,9 @@ impl HydraDB {
                         temp_file_has_data = true;
 
                         let val_pos = cur_val_offset;
-                        cur_val_offset += entry.len() as u64 + file_entry.key.len() as u64 + file_entry.val.len() as u64;
+                        cur_val_offset += entry.len() as u64
+                            + file_entry.key.len() as u64
+                            + file_entry.val.len() as u64;
                         let entry = to_hint_entry(
                             file_entry.tstamp,
                             &file_entry.key,
