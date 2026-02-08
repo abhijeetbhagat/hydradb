@@ -211,10 +211,18 @@ impl LogStore {
     }
 
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        self.log_state.insert(
-            b"last_purged_log_id",
-            serde_json::to_vec(&log_id).map_err(|e| StorageIOError::write_logs(&e))?,
-        );
+        self.log_state
+            .insert(
+                b"last_purged_log_id",
+                serde_json::to_vec(&log_id).map_err(|e| StorageIOError::write_logs(&e))?,
+            )
+            .map_err(|e| StorageError::IO {
+                source: StorageIOError::new(
+                    ErrorSubject::Store,
+                    ErrorVerb::Write,
+                    &io::Error::other(e),
+                ),
+            })?;
 
         {
             let keys = self

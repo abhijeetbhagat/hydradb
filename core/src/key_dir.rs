@@ -75,6 +75,13 @@ impl KeyDir {
         }
     }
 
+    pub fn entries(&self) -> Vec<(Bytes, KeyDirEntry)> {
+        self.kv_store
+            .iter()
+            .map(|e| (e.key().to_owned(), e.value().to_owned()))
+            .collect()
+    }
+
     /// returns the num of entries in the in-mem store
     pub fn len(&self) -> usize {
         self.kv_store.len()

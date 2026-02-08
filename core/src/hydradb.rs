@@ -170,6 +170,52 @@ impl HydraDB {
         )
     }
 
+    /// get all kv pairs for shapshotting.
+    ///
+    /// the format is [[tstamp|key len|key|val len|val]]
+    pub fn get_key_entries(&self) -> HydraDBResult<Vec<Vec<u8>>> {
+        let mut v = vec![];
+        for pair in self.key_dir.entries() {
+            let k = pair.0;
+            let entry = pair.1;
+            let mut kv = vec![];
+            kv.extend_from_slice(&k.len().to_be_bytes());
+            kv.extend_from_slice(&k);
+
+            let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
+                arcd_file.clone()
+            } else {
+                self.file_cache.insert(
+                    entry.file_id,
+                    Arc::new(
+                        File::options()
+                            .read(true)
+                            .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
+                    ),
+                );
+                self.file_cache.get(&entry.file_id).unwrap().clone()
+            };
+
+            let entry_len = 17 + k.as_ref().len() + entry.val_sz as usize;
+            let mut file_entry = vec![0; entry_len];
+            file.read_exact_at(&mut file_entry, entry.val_pos)?;
+
+            let tstamp = u32::from_be_bytes(file_entry[5..=8].try_into().unwrap());
+            kv.extend_from_slice(&tstamp.to_be_bytes());
+
+            let vsz = u32::from_be_bytes(file_entry[13..=16].try_into().unwrap());
+            let k_end = 17 + k.len();
+            let v_end = k_end + vsz as usize;
+
+            kv.extend_from_slice(&v.len().to_be_bytes());
+            kv.extend_from_slice(&file_entry[k_end..v_end]);
+
+            v.push(kv);
+        }
+
+        Ok(v)
+    }
+
     fn get_active_file(&self) -> usize {
         self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
     }
