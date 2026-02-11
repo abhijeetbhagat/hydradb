@@ -15,6 +15,12 @@ struct Args {
 
     #[arg(short, long)]
     port: u16,
+
+    #[clap(short, long, default_value = "1000")]
+    logs_per_snapshot: u64,
+
+    #[clap(short, long, default_value = "500")]
+    snapshot_retention: u64,
 }
 
 #[actix_web::main]
@@ -28,5 +34,12 @@ async fn main() -> Result<()> {
         args.id, args.port
     );
 
-    raft::start_raft_node(args.id, args.port, args.namespace).await
+    raft::start_raft_node(
+        args.id,
+        args.port,
+        args.namespace,
+        args.logs_per_snapshot,
+        args.snapshot_retention,
+    )
+    .await
 }

@@ -75,11 +75,9 @@ impl KeyDir {
         }
     }
 
-    pub fn entries(&self) -> Vec<(Bytes, KeyDirEntry)> {
-        self.kv_store
-            .iter()
-            .map(|e| (e.key().to_owned(), e.value().to_owned()))
-            .collect()
+    /// returns an iterator over all kv pairs in the dashmap
+    pub fn entries(&self) -> dashmap::iter::Iter<'_, Bytes, KeyDirEntry> {
+        self.kv_store.iter()
     }
 
     /// returns the num of entries in the in-mem store
@@ -92,7 +90,6 @@ impl KeyDir {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::{KeyDir, KeyDirEntry};
 

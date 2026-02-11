@@ -71,12 +71,20 @@ openraft::declare_raft_types!(
         R = Response,
 );
 
-pub async fn start_raft_node(node_id: NodeId, port: u16, namespace: String) -> anyhow::Result<()> {
+pub async fn start_raft_node(
+    node_id: NodeId,
+    port: u16,
+    namespace: String,
+    logs_per_snapshot: u64,
+    snapshot_retention: u64,
+) -> anyhow::Result<()> {
     // Create a configuration for the raft instance.
     let config = Config {
         heartbeat_interval: 500,
         election_timeout_min: 1500,
         election_timeout_max: 3000,
+        snapshot_policy: openraft::SnapshotPolicy::LogsSinceLast(logs_per_snapshot),
+        max_in_snapshot_log_to_keep: snapshot_retention,
         ..Default::default()
     };
 

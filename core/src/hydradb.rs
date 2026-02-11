@@ -81,6 +81,7 @@ pub struct HydraDB {
 
     /// for caching files during reads
     #[serde(skip)]
+    // todo use a concurrent lru to avoid keeping a lot of file objects in mem
     file_cache: DashMap<usize, Arc<File>>,
 }
 
@@ -170,123 +171,68 @@ impl HydraDB {
         )
     }
 
-    /// get all kv pairs for shapshotting.
+    /// get all kv pairs for snapshotting.
     ///
     /// the format is [[tstamp|key len|key|val len|val]]
-    pub fn get_key_entries(&self) -> HydraDBResult<Vec<Vec<u8>>> {
-        let mut v = vec![];
-        for pair in self.key_dir.entries() {
-            let k = pair.0;
-            let entry = pair.1;
-            let mut kv = vec![];
-            kv.extend_from_slice(&k.len().to_be_bytes());
-            kv.extend_from_slice(&k);
-
-            let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
-                arcd_file.clone()
-            } else {
-                self.file_cache.insert(
-                    entry.file_id,
-                    Arc::new(
-                        File::options()
-                            .read(true)
-                            .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
-                    ),
-                );
-                self.file_cache.get(&entry.file_id).unwrap().clone()
-            };
-
-            let entry_len = 17 + k.as_ref().len() + entry.val_sz as usize;
-            let mut file_entry = vec![0; entry_len];
-            file.read_exact_at(&mut file_entry, entry.val_pos)?;
-
-            let tstamp = u32::from_be_bytes(file_entry[5..=8].try_into().unwrap());
-            kv.extend_from_slice(&tstamp.to_be_bytes());
-
-            let vsz = u32::from_be_bytes(file_entry[13..=16].try_into().unwrap());
-            let k_end = 17 + k.len();
-            let v_end = k_end + vsz as usize;
-
-            kv.extend_from_slice(&v.len().to_be_bytes());
-            kv.extend_from_slice(&file_entry[k_end..v_end]);
-
-            v.push(kv);
-        }
-
-        Ok(v)
+    pub fn get_key_entries(&self) -> impl Iterator<Item = HydraDBResult<(u32, Bytes, Bytes)>> {
+        self.key_dir.entries().map(|keydir_entry| {
+            let key = keydir_entry.key().clone();
+            match self.read_value_from_file(&key, &keydir_entry) {
+                Ok(val) => Ok((keydir_entry.tstamp, key, val)),
+                Err(e) => Err(e),
+            }
+        })
     }
 
     fn get_active_file(&self) -> usize {
         self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// reads and validates a value from the data file for the given key entry
+    fn read_value_from_file(&self, k: &[u8], entry: &KeyDirEntry) -> HydraDBResult<Bytes> {
+        let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
+            arcd_file.clone()
+        } else {
+            self.file_cache.insert(
+                entry.file_id,
+                Arc::new(
+                    File::options()
+                        .read(true)
+                        .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
+                ),
+            );
+            self.file_cache.get(&entry.file_id).unwrap().clone()
+        };
+
+        let entry_len = 17 + k.len() + entry.val_sz as usize;
+        let mut buf = vec![0; entry_len];
+        file.read_exact_at(&mut buf, entry.val_pos)?;
+
+        let entry_crc = u32::from_be_bytes(buf[1..=4].try_into().unwrap());
+        let tstamp = u32::from_be_bytes(buf[5..=8].try_into().unwrap());
+        let ksz = u32::from_be_bytes(buf[9..=12].try_into().unwrap());
+        let vsz = u32::from_be_bytes(buf[13..=16].try_into().unwrap());
+
+        let k_start = 17;
+        let k_end = 17 + ksz as usize;
+        let v_end = k_end + vsz as usize;
+        let crc = calc_crc(tstamp, ksz, vsz, &buf[k_start..k_end], &buf[k_end..v_end]);
+
+        if entry_crc == crc {
+            Ok(Bytes::copy_from_slice(&buf[k_end..v_end]))
+        } else {
+            Err(HydraDBError::FileCorruptionError(
+                entry.file_id,
+                entry_crc,
+                crc,
+            ))
+        }
+    }
+
     /// gets the value, if present, for the given key `k`
     pub fn get(&self, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
         if let Some(in_mem_entry) = self.key_dir.get(&k) {
-            let KeyDirEntry {
-                file_id,
-                val_sz,
-                val_pos,
-                tstamp: _,
-            } = in_mem_entry;
-            // debug!("val_pos is {val_pos} val sz {val_sz}");
-
-            // debug!("reading from ./{}/{}", self.cur_cask, file_id);
-            let file = if let Some(arcd_file) = self.file_cache.get(&file_id) {
-                arcd_file.clone()
-            } else {
-                self.file_cache.insert(
-                    file_id,
-                    Arc::new(
-                        File::options()
-                            .read(true)
-                            .open(format!("./{}/{}", self.cur_cask, file_id))?,
-                    ),
-                );
-                self.file_cache.get(&file_id).unwrap().clone()
-            };
-
-            // file.seek(SeekFrom::Start(val_pos))?;
-            // debug!("file pos is {:?}", file.stream_position());
-
-            // read the entire entry at once
-            let entry_len = 17 + k.as_ref().len() + val_sz as usize;
-            let mut entry = vec![0; entry_len];
-            file.read_exact_at(&mut entry, val_pos)?;
-
-            let entry_crc = u32::from_be_bytes(entry[1..=4].try_into().unwrap());
-            let tstamp = u32::from_be_bytes(entry[5..=8].try_into().unwrap());
-            let ksz = u32::from_be_bytes(entry[9..=12].try_into().unwrap());
-            let vsz = u32::from_be_bytes(entry[13..=16].try_into().unwrap());
-            // todo: if we know that ksz is going to be atmost N bytes long,
-            // we can either allocate on stack or use smallvec
-            // let mut k = vec![0; ksz as usize];
-            // file.read_exact_at(&mut k, val_pos + 17)?;
-            // let mut v = vec![0; vsz as usize];
-            // file.read_exact_at(&mut v, val_pos + 17 + ksz as u64)?;
-
-            let k_start = 17;
-            let k_end = 17 + ksz as usize;
-            let v_end = k_end + vsz as usize;
-            let crc = calc_crc(
-                tstamp,
-                ksz,
-                vsz,
-                &entry[k_start..k_end],
-                &entry[k_end..v_end],
-            );
-
-            if entry_crc == crc {
-                Ok(Some(Bytes::copy_from_slice(&entry[k_end..v_end])))
-            } else {
-                println!("file crc {entry_crc}, crc {crc}");
-                Err(HydraDBError::FileCorruptionError(file_id, entry_crc, crc))
-            }
-
-            // let mut f = file.take(val_sz as u64);
-
-            // f.read_to_end(&mut v)?;
-            // debug!("value is {}", str::from_utf8(&v).unwrap());
+            Ok(Some(self.read_value_from_file(k.as_ref(), &in_mem_entry)?))
         } else {
             Ok(None)
         }
@@ -294,6 +240,26 @@ impl HydraDB {
 
     /// puts the given key-value pair under the set namespace
     pub fn put(&self, k: impl Into<Bytes>, v: impl Into<Bytes>) -> HydraDBResult<()> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+        self.put_internal(k, v, now)
+    }
+
+    pub fn put_with_tstamp(
+        &self,
+        k: impl Into<Bytes>,
+        v: impl Into<Bytes>,
+        tstamp: u32,
+    ) -> HydraDBResult<()> {
+        self.put_internal(k, v, tstamp)
+    }
+
+    /// puts the given key-value pair under the set namespace
+    fn put_internal(
+        &self,
+        k: impl Into<Bytes>,
+        v: impl Into<Bytes>,
+        tstamp: u32,
+    ) -> HydraDBResult<()> {
         let k = k.into();
         let v = v.into();
 
@@ -332,7 +298,7 @@ impl HydraDB {
         let val_pos = writer.last_val_offset; // points to start byte of the crc of this record
         let vsz = v.len() as u32;
         writer.last_val_offset += 17 + ksz as u64 + vsz as u64; // 17 bytes header size
-        let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+        //
         let crc = calc_crc(tstamp, ksz, vsz, &k, &v);
 
         let entry = to_db_entry(0, crc, tstamp, &k, &v);

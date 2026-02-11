@@ -1,3 +1,5 @@
+use bincode::Options;
+use bytes::Bytes;
 use core::builder::HydraDBBuilder;
 use core::hydradb::HydraDB;
 use openraft::BasicNode;
@@ -55,6 +57,9 @@ pub struct StateMachineStore {
     /// The Raft state machine.
     pub state_machine: RwLock<StateMachineData>,
 
+    /// current namespace
+    pub namespace: String,
+
     /// Used in identifier for snapshot.
     ///
     /// Note that concurrently created snapshots and snapshots created on different nodes
@@ -80,9 +85,19 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
     #[tracing::instrument(level = "trace", skip(self))]
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
         // Serialize the data of the state machine.
+        let mut snapshot_data = vec![];
+
+        let encoding_options = bincode::DefaultOptions::new().with_fixint_encoding();
+
         let state_machine = self.state_machine.read().await;
-        let data = serde_json::to_vec(&state_machine.data)
-            .map_err(|e| StorageIOError::read_state_machine(&e))?;
+        let db = &state_machine.data;
+
+        for entry in db.get_key_entries() {
+            let (tstamp, key, val) = entry.map_err(|e| StorageIOError::read_state_machine(&e))?;
+            encoding_options.serialize_into(&mut snapshot_data, &(tstamp, key, val));
+        }
+        // let data = serde_json::to_vec(&state_machine.data)
+        //     .map_err(|e| StorageIOError::read_state_machine(&e))?;
 
         let last_applied_log = state_machine.last_applied_log;
         let last_membership = state_machine.last_membership.clone();
@@ -107,14 +122,14 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
 
         let snapshot = StoredSnapshot {
             meta: meta.clone(),
-            data: data.clone(),
+            data: snapshot_data.clone(),
         };
 
         *current_snapshot = Some(snapshot);
 
         Ok(Snapshot {
             meta,
-            snapshot: Box::new(Cursor::new(data)),
+            snapshot: Box::new(Cursor::new(snapshot_data)),
         })
     }
 }
@@ -216,21 +231,36 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             "decoding snapshot for installation"
         );
 
-        let new_snapshot = StoredSnapshot {
-            meta: meta.clone(),
-            data: snapshot.into_inner(),
-        };
+        let snapshot_data = snapshot.into_inner();
+
+        let encoding_options = bincode::DefaultOptions::new().with_fixint_encoding();
+
+        let namespace = format!("{}_restore", self.namespace);
+        // cleanup existing snapshot restore dir before installing new snapshot
+        if std::path::Path::new(&namespace).exists() {
+            std::fs::remove_dir_all(&namespace)
+                .map_err(|e| StorageIOError::write_snapshot(None, &e))?;
+        }
+        let db = HydraDBBuilder::new()
+            .with_cask(namespace)
+            .build()
+            .map_err(|e| StorageIOError::read_state_machine(&e))?;
+
+        let mut reader = Cursor::new(&snapshot_data);
 
         // Update the state machine.
-        let updated_state_machine_data = serde_json::from_slice(&new_snapshot.data)
-            .map_err(|e| StorageIOError::read_snapshot(Some(new_snapshot.meta.signature()), &e))?;
-        let updated_state_machine = StateMachineData {
-            last_applied_log: meta.last_log_id,
-            last_membership: meta.last_membership.clone(),
-            data: updated_state_machine_data,
-        };
+        while let Ok((tstamp, key, val)) =
+            encoding_options.deserialize_from::<_, (u32, Bytes, Bytes)>(&mut reader)
+        {
+            // todo: we need a bulk api on the db to speed this up
+            db.put_with_tstamp(key, val, tstamp)
+                .map_err(|e| StorageIOError::write(&e))?;
+        }
+
         let mut state_machine = self.state_machine.write().await;
-        *state_machine = updated_state_machine;
+        state_machine.data = Arc::new(db);
+        state_machine.last_applied_log = meta.last_log_id;
+        state_machine.last_membership = meta.last_membership.clone();
 
         // Lock the current snapshot before releasing the lock on the state machine, to avoid a race
         // condition on the written snapshot
@@ -238,7 +268,11 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         drop(state_machine);
 
         // Update current snapshot.
-        *current_snapshot = Some(new_snapshot);
+        *current_snapshot = Some(StoredSnapshot {
+            meta: meta.clone(),
+            data: snapshot_data,
+        });
+
         Ok(())
     }
 

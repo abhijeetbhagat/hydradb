@@ -40,4 +40,3 @@ curl 'http://localhost:9896/init' -X POST -H "Content-Type: application/json" --
 curl 'http://localhost:9896/add-learner' -X POST -H "Content-Type: application/json" --data '[2, "127.0.0.1:9897"]'
 curl 'http://localhost:9896/add-learner' -X POST -H "Content-Type: application/json" --data '[3, "127.0.0.1:9898"]'
 curl 'http://localhost:9896/change-membership' -X POST -H "Content-Type: application/json" --data '[1,2,3]'
-
