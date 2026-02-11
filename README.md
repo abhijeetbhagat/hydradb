@@ -55,3 +55,13 @@ curl 'http://localhost:9896/add-learner' -X POST -H "Content-Type: application/j
 ```
 curl 'http://localhost:9896/change-membership' -X POST -H "Content-Type: application/json" --data '[1,2,3]'
 ```
+
+6. write something to the leader
+```
+curl 'http://localhost:9896/write' -X POST  -H "Content-Type: application/json" --data '{"Put":{"key":"ashu", "value":"rust"}}'
+```
+
+7. read it from the follower1
+```
+curl 'http://localhost:9897/read' -X POST  -H "Content-Type: application/json" --data '"ashu"'
+```
