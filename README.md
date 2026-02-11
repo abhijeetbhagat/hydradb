@@ -7,6 +7,7 @@ a distributed KV store based on bitcask.
 - append only log for fast writes.
 - a read requires one seek operation.
 - manual merging.
+- snapshotting support
 
 ## Use as a library
 
