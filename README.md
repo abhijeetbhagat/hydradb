@@ -6,8 +6,8 @@ a distributed KV store based on bitcask.
 - uses a concurrent hashmap for caching file descriptors during reads. 
 - append only log for fast writes.
 - a read requires one seek operation.
-- manual merging.
-- snapshotting support
+- manual merging/compaction.
+- snapshotting support.
 
 ## Use as a library
 
@@ -25,4 +25,33 @@ a distributed KV store based on bitcask.
 
     db.del("abhi")?;
     
+```
+
+## Use as a distributed KV store
+
+1. spin up the leader node
+```
+./server --namespace test --id 1 --port 9896 > leader.log 2&>1 &
+```
+
+2. spin up 2 follower nodes
+```
+./server --namespace test --id 2 --port 9896 > follower1.log 2&>1 &
+./server --namespace test --id 3 --port 9896 > follower2.log 2&>1 &
+```
+
+3. initialize leader
+```
+curl 'http://localhost:9896/init' -X POST -H "Content-Type: application/json" --data '[]' 
+```
+
+4. add learners (wait for them to catchup to the leader before making them followers) 
+```
+curl 'http://localhost:9896/add-learner' -X POST -H "Content-Type: application/json" --data '[2, "127.0.0.1:9897"]'
+curl 'http://localhost:9896/add-learner' -X POST -H "Content-Type: application/json" --data '[3, "127.0.0.1:9898"]'
+```
+
+5. make learners as followers
+```
+curl 'http://localhost:9896/change-membership' -X POST -H "Content-Type: application/json" --data '[1,2,3]'
 ```
