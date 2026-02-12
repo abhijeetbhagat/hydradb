@@ -97,7 +97,9 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
 
         for entry in db.get_key_entries() {
             let (tstamp, key, val) = entry.map_err(|e| StorageIOError::read_state_machine(&e))?;
-            encoding_options.serialize_into(&mut snapshot_data, &(tstamp, key, val));
+            encoding_options
+                .serialize_into(&mut snapshot_data, &(tstamp, key, val))
+                .map_err(|e| StorageIOError::read_state_machine(&e))?;
         }
         // let data = serde_json::to_vec(&state_machine.data)
         //     .map_err(|e| StorageIOError::read_state_machine(&e))?;

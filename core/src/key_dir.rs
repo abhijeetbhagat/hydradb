@@ -25,6 +25,12 @@ pub struct KeyDir {
     kv_store: DashMap<Bytes, KeyDirEntry>,
 }
 
+impl Default for KeyDir {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyDir {
     /// constructs a new in-mem store
     pub fn new() -> Self {
@@ -85,6 +91,7 @@ impl KeyDir {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::{KeyDir, KeyDirEntry};
 

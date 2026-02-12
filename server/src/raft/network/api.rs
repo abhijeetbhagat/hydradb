@@ -43,7 +43,7 @@ pub async fn read(app: Data<App>, req: Json<String>) -> actix_web::Result<impl R
 }
 
 #[post("/merge")]
-pub async fn merge(app: Data<App>, req: Json<String>) -> actix_web::Result<impl Responder> {
+pub async fn merge(app: Data<App>, _req: Json<String>) -> actix_web::Result<impl Responder> {
     let state_machine = app.state_machine_store.state_machine.write().await;
     if state_machine.data.merge().is_ok() {
         Ok(Json("done".to_owned()))

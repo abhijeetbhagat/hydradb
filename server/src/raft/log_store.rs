@@ -60,7 +60,9 @@ impl LogStore {
             .range((start, end))
             .values()
             .map(|res| {
-                let v = res.unwrap();
+                let v = res.map_err(|e| StorageError::IO {
+                    source: StorageIOError::read_logs(&e),
+                })?;
                 serde_json::from_slice(&v).map_err(|e| StorageError::IO {
                     source: StorageIOError::read_logs(&e),
                 })
@@ -69,16 +71,20 @@ impl LogStore {
     }
 
     async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError<NodeId>> {
-        let last = self.log.iter().next_back().map(|res| {
-            let (_, val) = res.unwrap();
-            let entry = serde_json::from_slice::<Entry<TypeConfig>>(&val)
-                .map_err(|e| StorageError::<NodeId>::IO {
+        let last = if let Some(res) = self.log.iter().next_back() {
+            let (_, val) = res.map_err(|e| StorageError::IO {
+                source: StorageIOError::read_logs(&e),
+            })?;
+            let entry =
+                serde_json::from_slice::<Entry<TypeConfig>>(&val).map_err(|e| StorageError::<
+                    NodeId,
+                >::IO {
                     source: StorageIOError::read_logs(&e),
-                })
-                .unwrap();
-
-            entry.get_log_id().clone()
-        });
+                })?;
+            Some(*entry.get_log_id())
+        } else {
+            None
+        };
 
         let last_purged_log_id = self
             .log_state
@@ -92,7 +98,7 @@ impl LogStore {
         };
 
         let last = match last {
-            None => last_purged_log_id.clone(),
+            None => last_purged_log_id,
             Some(x) => Some(x),
         };
 
@@ -179,10 +185,14 @@ impl LogStore {
     {
         // Simple implementation that calls the flush-before-return `append_to_log`.
         for entry in entries {
-            self.log.insert(
-                u64::to_be_bytes(entry.get_log_id().index),
-                serde_json::to_vec(&entry).map_err(|e| StorageIOError::write_logs(&e))?,
-            );
+            self.log
+                .insert(
+                    u64::to_be_bytes(entry.get_log_id().index),
+                    serde_json::to_vec(&entry).map_err(|e| StorageIOError::write_logs(&e))?,
+                )
+                .map_err(|e| StorageError::IO {
+                    source: StorageIOError::write_logs(&e),
+                })?;
         }
         callback.log_io_completed(Ok(()));
 
@@ -204,7 +214,9 @@ impl LogStore {
             })?;
 
         for key in keys {
-            self.log.remove(&key);
+            self.log.remove(&key).map_err(|e| StorageError::IO {
+                source: StorageIOError::write_logs(&e),
+            })?;
         }
 
         Ok(())
@@ -239,7 +251,9 @@ impl LogStore {
                 })?;
 
             for key in keys {
-                self.log.remove(&key);
+                self.log.remove(&key).map_err(|e| StorageError::IO {
+                    source: StorageIOError::write_logs(&e),
+                })?;
             }
         }
 

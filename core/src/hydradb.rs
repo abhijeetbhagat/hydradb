@@ -180,6 +180,7 @@ impl HydraDB {
         })
     }
 
+    #[cfg(test)]
     fn get_active_file(&self) -> usize {
         self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
     }

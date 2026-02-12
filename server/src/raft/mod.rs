@@ -50,18 +50,18 @@ pub mod typ {
     use openraft::BasicNode;
 
     use super::NodeId;
-    use super::TypeConfig;
+    // use super::TypeConfig;
 
     pub type RaftError<E = openraft::error::Infallible> = openraft::error::RaftError<NodeId, E>;
     pub type RPCError<E = openraft::error::Infallible> =
         openraft::error::RPCError<NodeId, BasicNode, RaftError<E>>;
 
-    pub type ClientWriteError = openraft::error::ClientWriteError<NodeId, BasicNode>;
-    pub type CheckIsLeaderError = openraft::error::CheckIsLeaderError<NodeId, BasicNode>;
-    pub type ForwardToLeader = openraft::error::ForwardToLeader<NodeId, BasicNode>;
-    pub type InitializeError = openraft::error::InitializeError<NodeId, BasicNode>;
+    // pub type ClientWriteError = openraft::error::ClientWriteError<NodeId, BasicNode>;
+    // pub type CheckIsLeaderError = openraft::error::CheckIsLeaderError<NodeId, BasicNode>;
+    // pub type ForwardToLeader = openraft::error::ForwardToLeader<NodeId, BasicNode>;
+    // pub type InitializeError = openraft::error::InitializeError<NodeId, BasicNode>;
 
-    pub type ClientWriteResponse = openraft::raft::ClientWriteResponse<TypeConfig>;
+    // pub type ClientWriteResponse = openraft::raft::ClientWriteResponse<TypeConfig>;
 }
 
 openraft::declare_raft_types!(
@@ -105,7 +105,7 @@ pub async fn start_raft_node(
         node_id,
         config.clone(),
         network,
-        log_store.clone(),
+        log_store,
         state_machine_store.clone(),
     )
     .await
@@ -118,9 +118,7 @@ pub async fn start_raft_node(
         id: node_id,
         addr: http_addr.clone(),
         raft,
-        log_store,
         state_machine_store,
-        config,
     });
 
     // Start the actix-web server.
