@@ -8,6 +8,7 @@ use openraft::EntryPayload;
 use openraft::ErrorSubject;
 use openraft::ErrorVerb;
 use openraft::LogId;
+use openraft::Membership;
 use openraft::RaftSnapshotBuilder;
 use openraft::RaftTypeConfig;
 use openraft::SnapshotMeta;
@@ -16,7 +17,6 @@ use openraft::StorageIOError;
 use openraft::StoredMembership;
 use openraft::storage::RaftStateMachine;
 use openraft::storage::Snapshot;
-use serde::{Deserialize, Serialize};
 use std::io;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ pub struct StoredSnapshot {
     pub data: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct StateMachineData {
     pub last_applied_log: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, BasicNode>,
@@ -44,15 +44,16 @@ pub struct StateMachineData {
 impl StateMachineData {
     fn new(namespace: String) -> anyhow::Result<Self> {
         Ok(Self {
+            last_applied_log: None,
+            last_membership: StoredMembership::new(None, Membership::default()),
             data: Arc::new(HydraDBBuilder::new().with_cask(namespace).build()?),
-            ..Default::default()
         })
     }
 }
 
 /// Defines a state machine for the Raft cluster. This state machine represents a copy of the
 /// data for this node. Additionally, it is responsible for storing the last snapshot of the data.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StateMachineStore {
     /// The Raft state machine.
     pub state_machine: RwLock<StateMachineData>,
@@ -75,8 +76,10 @@ impl StateMachineStore {
     pub fn new(namespace: String) -> anyhow::Result<Self> {
         Ok(Self {
             // one writer at a time to the db
-            state_machine: RwLock::new(StateMachineData::new(namespace)?),
-            ..Default::default()
+            state_machine: RwLock::new(StateMachineData::new(namespace.clone())?),
+            namespace,
+            snapshot_idx: 0.into(),
+            current_snapshot: RwLock::new(None),
         })
     }
 }

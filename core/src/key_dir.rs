@@ -1,10 +1,7 @@
-// use std::collections::HashMap;
-
 use bytes::Bytes;
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct KeyDirEntry {
     pub file_id: usize,
     pub val_sz: u32,
@@ -23,11 +20,9 @@ impl KeyDirEntry {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+#[derive(Debug)]
 pub struct KeyDir {
-    #[serde(skip)]
     kv_store: DashMap<Bytes, KeyDirEntry>,
-    // kv_store: HashMap<Bytes, KeyDirEntry>,
 }
 
 impl KeyDir {

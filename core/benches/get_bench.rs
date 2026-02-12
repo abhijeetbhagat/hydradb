@@ -1,6 +1,6 @@
 use core::builder::HydraDBBuilder;
 use criterion::{Criterion, criterion_group, criterion_main};
-use rand::Rng;
+use rand::RngExt;
 use std::fs;
 
 fn setup() -> core::hydradb::HydraDB {

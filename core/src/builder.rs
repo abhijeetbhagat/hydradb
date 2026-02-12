@@ -5,7 +5,7 @@ use crate::hydradb::HydraDB;
 pub struct HydraDBBuilder {
     max_file_size_threshold: u64,
     cask: Option<String>,
-    cache_size: usize,
+    cache_size: u64,
 }
 
 impl HydraDBBuilder {
@@ -22,7 +22,7 @@ impl HydraDBBuilder {
         self
     }
 
-    pub fn with_cache_size(mut self, n: usize) -> Self {
+    pub fn with_cache_size(mut self, n: u64) -> Self {
         self.cache_size = n;
         self
     }

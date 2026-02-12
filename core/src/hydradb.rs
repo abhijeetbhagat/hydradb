@@ -5,13 +5,12 @@ use crate::utils::calc_crc;
 // use anyhow::Result;
 use crate::error::{HydraDBError, HydraDBResult};
 use bytes::Bytes;
-use dashmap::DashMap;
 use log::debug;
-use serde::{Deserialize, Serialize};
+use mini_moka::sync::Cache;
 use std::fmt::Debug;
 use std::fs;
 use std::fs::{DirBuilder, File};
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
@@ -51,9 +50,9 @@ fn to_hint_entry(tstamp: u32, k: &[u8], v: &[u8], val_pos: u64) -> Vec<u8> {
     o
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct WriterState {
-    writer: Option<BufWriter<File>>,
+    writer: BufWriter<File>,
     // tracks the val positions in a data file
     // so that we avoid expensive seek operations to calculate them
     last_val_offset: u64,
@@ -61,7 +60,7 @@ struct WriterState {
 }
 
 /// the main bitcask storage engine
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Debug)]
 pub struct HydraDB {
     /// name of the cask (folder/namespace)
     cur_cask: String,
@@ -76,13 +75,10 @@ pub struct HydraDB {
     max_file_size_threshold: u64,
 
     /// file writer
-    #[serde(skip)]
     writer: Mutex<WriterState>,
 
     /// for caching files during reads
-    #[serde(skip)]
-    // todo use a concurrent lru to avoid keeping a lot of file objects in mem
-    file_cache: DashMap<usize, Arc<File>>,
+    file_cache: Cache<usize, Arc<File>>,
 }
 
 impl HydraDB {
@@ -90,7 +86,7 @@ impl HydraDB {
     pub fn new<T: Into<String> + Debug>(
         namespace: T,
         max_file_size_threshold: u64,
-        cache_size: usize,
+        cache_size: u64,
     ) -> HydraDBResult<Self> {
         let namespace = namespace.into();
 
@@ -143,11 +139,11 @@ impl HydraDB {
             key_dir: KeyDir::new(),
             max_file_size_threshold,
             writer: Mutex::new(WriterState {
-                writer: Some(BufWriter::new(file)),
+                writer: BufWriter::new(file),
                 last_val_offset,
                 cur_file_size,
             }),
-            file_cache: DashMap::with_capacity(cache_size),
+            file_cache: Cache::new(cache_size),
         };
 
         db.build_key_dir()?;
@@ -284,7 +280,7 @@ impl HydraDB {
                 .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
 
             *writer = WriterState {
-                writer: Some(BufWriter::new(file)),
+                writer: BufWriter::new(file),
                 last_val_offset: 0,
                 cur_file_size: 0,
             };
@@ -303,10 +299,10 @@ impl HydraDB {
 
         let entry = to_db_entry(0, crc, tstamp, &k, &v);
 
-        writer.writer.as_mut().unwrap().write_all(&entry)?;
-        writer.writer.as_mut().unwrap().write_all(&k)?;
-        writer.writer.as_mut().unwrap().write_all(&v)?;
-        writer.writer.as_mut().unwrap().flush()?;
+        writer.writer.write_all(&entry)?;
+        writer.writer.write_all(&k)?;
+        writer.writer.write_all(&v)?;
+        writer.writer.flush()?;
 
         writer.cur_file_size += 17u64 + k.len() as u64 + v.len() as u64;
 
@@ -352,7 +348,7 @@ impl HydraDB {
                     .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
 
                 *writer = WriterState {
-                    writer: Some(BufWriter::new(file)),
+                    writer: BufWriter::new(file),
                     last_val_offset: 0,
                     cur_file_size: 0,
                 };
@@ -368,10 +364,10 @@ impl HydraDB {
 
             let entry = to_db_entry(1, crc, tstamp, k, &[]);
 
-            writer.writer.as_mut().unwrap().write_all(&entry)?;
-            writer.writer.as_mut().unwrap().write_all(k)?;
-            writer.writer.as_mut().unwrap().write_all(&[])?;
-            writer.writer.as_mut().unwrap().flush()?;
+            writer.writer.write_all(&entry)?;
+            writer.writer.write_all(k)?;
+            writer.writer.write_all(&[])?;
+            writer.writer.flush()?;
 
             writer.cur_file_size += 17u64 + k.len() as u64;
 

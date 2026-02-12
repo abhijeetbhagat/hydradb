@@ -15,6 +15,7 @@ dashmap.workspace = true
 log.workspace = true
 env_logger.workspace = true
 thiserror.workspace = true
+mini-moka.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
