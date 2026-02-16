@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     info!(
-        "HydraDB v0.1.0 id: {} listening on localhost:{}",
+        "HydraDB v0.2.0 id: {} listening on localhost:{}",
         args.id, args.port
     );
 

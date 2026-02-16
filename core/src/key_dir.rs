@@ -7,22 +7,33 @@ pub struct KeyDirEntry {
     pub val_sz: u32,
     pub val_pos: u64,
     pub tstamp: u32,
+    pub txn_start_id: u32,
+    pub txn_end_id: u32,
 }
 
 impl KeyDirEntry {
-    pub fn new(file_id: usize, val_sz: u32, val_pos: u64, tstamp: u32) -> Self {
+    pub fn new(
+        file_id: usize,
+        val_sz: u32,
+        val_pos: u64,
+        tstamp: u32,
+        txn_start_id: u32,
+        txn_end_id: u32,
+    ) -> Self {
         Self {
             file_id,
             val_sz,
             val_pos,
             tstamp,
+            txn_start_id,
+            txn_end_id,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct KeyDir {
-    kv_store: DashMap<Bytes, KeyDirEntry>,
+    kv_store: DashMap<Bytes, Vec<KeyDirEntry>>,
 }
 
 impl Default for KeyDir {
@@ -36,19 +47,20 @@ impl KeyDir {
     pub fn new() -> Self {
         Self {
             kv_store: DashMap::new(),
-            // kv_store: HashMap::new(),
         }
     }
 
     /// puts the key-value pair in the store
     pub fn put(&self, k: impl Into<Bytes>, v: KeyDirEntry) {
-        self.kv_store.insert(k.into(), v);
+        self.kv_store
+            .entry(k.into())
+            .and_modify(|vals| vals.push(v.clone()))
+            .or_insert(vec![v]);
     }
 
     /// gets the value for given key `k`
-    pub fn get(&self, k: impl AsRef<[u8]>) -> Option<KeyDirEntry> {
+    pub fn get(&self, k: impl AsRef<[u8]>) -> Option<Vec<KeyDirEntry>> {
         self.kv_store.get(k.as_ref()).map(|entry| entry.clone())
-        // self.kv_store.get(k.as_ref()).cloned()
     }
 
     /// deletes the given key `k`
@@ -72,12 +84,11 @@ impl KeyDir {
                     .map(|entry| entry.key().clone())
                     .collect(),
             )
-            // Some(self.kv_store.keys().cloned().collect())
         }
     }
 
     /// returns an iterator over all kv pairs in the dashmap
-    pub fn entries(&self) -> dashmap::iter::Iter<'_, Bytes, KeyDirEntry> {
+    pub fn entries(&self) -> dashmap::iter::Iter<'_, Bytes, Vec<KeyDirEntry>> {
         self.kv_store.iter()
     }
 
@@ -98,19 +109,19 @@ mod tests {
     #[test]
     fn put_test() {
         let store = KeyDir::new();
-        store.put("abhi", KeyDirEntry::new(1, 5, 1, 0));
-        store.put("pads", KeyDirEntry::new(1, 9, 2, 0));
-        store.put("ashu", KeyDirEntry::new(1, 5, 3, 0));
+        store.put("abhi", KeyDirEntry::new(1, 5, 1, 0, 1, 1));
+        store.put("pads", KeyDirEntry::new(1, 9, 2, 0, 2, 2));
+        store.put("ashu", KeyDirEntry::new(1, 5, 3, 0, 3, 2));
         assert_eq!(store.len(), 3);
     }
 
     #[test]
     fn del_test() {
         let store = KeyDir::new();
-        store.put("abhi", KeyDirEntry::new(1, 5, 1, 0));
-        store.put("pads", KeyDirEntry::new(1, 9, 2, 0));
+        store.put("abhi", KeyDirEntry::new(1, 5, 1, 0, 1, 1));
+        store.put("pads", KeyDirEntry::new(1, 9, 2, 0, 2, 2));
         store.del("abhi");
-        store.put("ashu", KeyDirEntry::new(1, 5, 3, 0));
+        store.put("ashu", KeyDirEntry::new(1, 5, 3, 0, 3, 3));
         assert_eq!(store.len(), 2);
     }
 }

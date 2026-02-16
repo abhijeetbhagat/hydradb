@@ -1,0 +1,48 @@
+before txns impl, the db:
+ - has double booking problem: Both Alice & Bob read the same key first at the same time & update it at the same time violating business logic (booking a seat in a bus).
+ - has write skew problem: Both Alice & Bob read same/overlapping keys at the same time & update different keys at the same time (at least one doctor needs to be on call, both Alice & Bob check each other's status at the same time & set themselves as away).
+ - has no support for rollback: whilst in the middle of an acc txfer, the db may crash leaving balances partially updated.
+ - has read isolation problem: whilst in the middle of an acc txfer, a reader may read a partial state of the db .
+ - has read committed isolation level out of the box: everything is instantly committed to the disk & only this committed data is read.
+
+double booking problem: two txns read same val, perform business logic & update the *same key*
+write skew: two txns read same val, perform business logic & update *different keys*
+snapshot isolation solves double booking problem: Bob will realize that Alice has updated the key before he could & abort the txn because they are trying to update the same key. in this case the write set of the txn has the same key & read set also has same key.
+snapshot isolation does not solve write skew: because two different keys are getting updated & the db doesn't know what the business logic is. in this case the write set of the txn has different keys & read set has overlapping keys.
+serializable isolation solves write skew: it checks for read set to see whether keys in this set have been modified before executing the txn. if yes, abort the txn.
+
+**from A Critique of ANSI SQL Isolation Levels paper**
+
+  *dirty read* 
+    Transaction T1 modifies a data item.
+    Another transaction T2 then reads that data item before T1
+    performs a COMMIT or ROLLBACK. If T1 then performs a
+    ROLLBACK, T2 has read a data item that was never
+    committed and so never really existed.
+
+  *dirty write*
+    Transaction T1 modifies a data item.
+    Another transaction T2 then further modifies that data
+    item before T1 performs a COMMIT or ROLLBACK. 
+
+  *non repeatable read*
+    Transaction T1 reads a data item. Another transaction T2 then modifies or
+    deletes that data item and commits. If T1 then attempts to
+    reread the data item, it receives a modified value or
+    discovers that the data item has been deleted
+
+  *phantom read*
+    Transaction T1 reads a set of data items
+    satisfying some <search condition>. Transaction T2
+    then creates data items that satisfy T1’s <search condi-
+    tion> and commits. If T1 then repeats its read with the
+    same <search condition>, it gets a set of data items
+    different from the first read
+
+  *lost update* <- double booking problem
+    transaction T1 reads a data item and then T2 updates the
+    data item (possibly based on a previous read), then T1
+    (based on its earlier read value) updates the data item and
+    commits. 
+
+https://notes.eatonphil.com/2024-05-16-mvcc.html -> impl of mvcc & different isolation levels

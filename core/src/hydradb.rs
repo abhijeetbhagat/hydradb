@@ -1,54 +1,24 @@
 use crate::data_file_iter::{DataFileEntry, OptimizedDataFileIterator};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
-use crate::utils::calc_crc;
+use crate::txn::Txn;
+use crate::utils::{calc_crc, to_db_entry, to_hint_entry};
 // use anyhow::Result;
 use crate::error::{HydraDBError, HydraDBResult};
+use crate::txn::{IsolationLevel, TxnState};
 use bytes::Bytes;
 use log::debug;
 use mini_moka::sync::Cache;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
 use std::fs::{DirBuilder, File};
 use std::io::{BufWriter, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// returns a raw db header entry to persist from the given data
-#[inline]
-fn to_db_entry(is_deleted: u8, crc: u32, tstamp: u32, k: &[u8], v: &[u8]) -> [u8; 17] {
-    // is_deleted + crc + tstamp + ksz + vsz
-    let mut o = [0; 1 + 4 + 4 + 4 + 4];
-    o[0] = is_deleted;
-
-    let kl = k.len() as u32;
-    let vl = v.len() as u32;
-
-    o[1..=4].copy_from_slice(&crc.to_be_bytes());
-    o[5..=8].copy_from_slice(&tstamp.to_be_bytes());
-    o[9..=12].copy_from_slice(&kl.to_be_bytes());
-    o[13..=16].copy_from_slice(&vl.to_be_bytes());
-    o
-}
-
-#[inline]
-fn to_hint_entry(tstamp: u32, k: &[u8], v: &[u8], val_pos: u64) -> Vec<u8> {
-    // tstamp + ksz + vsz + val_pos + key
-    let mut o = Vec::with_capacity(4 + 4 + 4 + 8 + k.len());
-
-    let kl = k.len() as u32;
-    let vl = v.len() as u32;
-
-    o.extend_from_slice(&tstamp.to_be_bytes());
-    o.extend_from_slice(&kl.to_be_bytes());
-    o.extend_from_slice(&vl.to_be_bytes());
-    o.extend_from_slice(&val_pos.to_be_bytes());
-    o.extend_from_slice(k);
-    o
-}
 
 #[derive(Debug)]
 struct WriterState {
@@ -79,6 +49,12 @@ pub struct HydraDB {
 
     /// for caching files during reads
     file_cache: Cache<usize, Arc<File>>,
+
+    /// monotonically increasing txn id
+    cur_txn_id: AtomicU32,
+
+    /// track txns
+    txn_states: HashMap<u32, TxnState>,
 }
 
 impl HydraDB {
@@ -167,14 +143,44 @@ impl HydraDB {
         )
     }
 
+    pub fn begin_txn(&mut self) -> Txn {
+        // SAFETY: relaxed because we dont care about other threads
+        let new_txn_id = self
+            .cur_txn_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let txn = Txn::new(new_txn_id, IsolationLevel::ReadUncommitted);
+
+        self.txn_states.insert(new_txn_id, TxnState::InProgress);
+
+        txn
+    }
+
+    pub fn commit(&mut self, txn: &mut Txn) {
+        self.complete_txn(txn, TxnState::Committed);
+    }
+
+    pub fn abort(&mut self, txn: &mut Txn) {
+        self.complete_txn(txn, TxnState::Aborted);
+    }
+
+    fn complete_txn(&mut self, txn: &mut Txn, state: TxnState) {
+        txn.set_state(state.clone());
+        self.txn_states.insert(txn.id(), state);
+    }
+
+    fn get_txn_state(&self, id: u32) -> Option<TxnState> {
+        self.txn_states.get(&id).cloned()
+    }
+
     /// get all kv pairs for snapshotting.
     ///
     /// the format is [[tstamp|key len|key|val len|val]]
-    pub fn get_key_entries(&self) -> impl Iterator<Item = HydraDBResult<(u32, Bytes, Bytes)>> {
+    pub fn get_key_entries(&self) -> impl Iterator<Item = HydraDBResult<(u32, u32, Bytes, Bytes)>> {
         self.key_dir.entries().map(|keydir_entry| {
             let key = keydir_entry.key().clone();
             match self.read_value_from_file(&key, &keydir_entry) {
-                Ok(val) => Ok((keydir_entry.tstamp, key, val)),
+                Ok(val) => Ok((keydir_entry.tstamp, keydir_entry.txn_id, key, val)),
                 Err(e) => Err(e),
             }
         })
@@ -185,51 +191,79 @@ impl HydraDB {
         self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn is_visible(txn: &Txn, val: &KeyDirEntry) -> bool {
+        todo!("impl this")
+    }
+
     /// reads and validates a value from the data file for the given key entry
-    fn read_value_from_file(&self, k: &[u8], entry: &KeyDirEntry) -> HydraDBResult<Bytes> {
-        let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
-            arcd_file.clone()
-        } else {
-            self.file_cache.insert(
-                entry.file_id,
-                Arc::new(
-                    File::options()
-                        .read(true)
-                        .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
-                ),
+    fn read_value_from_file(
+        &self,
+        txn: &Txn,
+        k: &[u8],
+        val_entries: &Vec<KeyDirEntry>,
+    ) -> HydraDBResult<Bytes> {
+        let mut val = Bytes::new();
+
+        for entry in val_entries.iter().rev() {
+            let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
+                arcd_file.clone()
+            } else {
+                self.file_cache.insert(
+                    entry.file_id,
+                    Arc::new(
+                        File::options()
+                            .read(true)
+                            .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
+                    ),
+                );
+                self.file_cache.get(&entry.file_id).unwrap().clone()
+            };
+
+            let entry_len = 17 + k.len() + entry.val_sz as usize;
+            let mut buf = vec![0; entry_len];
+            file.read_exact_at(&mut buf, entry.val_pos)?;
+
+            let entry_crc = u32::from_be_bytes(buf[1..=4].try_into().unwrap());
+            let tstamp = u32::from_be_bytes(buf[5..=8].try_into().unwrap());
+            let txn_id = u32::from_be_bytes(buf[9..=12].try_into().unwrap());
+            let ksz = u32::from_be_bytes(buf[13..=16].try_into().unwrap());
+            let vsz = u32::from_be_bytes(buf[17..=20].try_into().unwrap());
+
+            let k_start = 17;
+            let k_end = 17 + ksz as usize;
+            let v_end = k_end + vsz as usize;
+            let crc = calc_crc(
+                tstamp,
+                txn_id,
+                ksz,
+                vsz,
+                &buf[k_start..k_end],
+                &buf[k_end..v_end],
             );
-            self.file_cache.get(&entry.file_id).unwrap().clone()
-        };
 
-        let entry_len = 17 + k.len() + entry.val_sz as usize;
-        let mut buf = vec![0; entry_len];
-        file.read_exact_at(&mut buf, entry.val_pos)?;
-
-        let entry_crc = u32::from_be_bytes(buf[1..=4].try_into().unwrap());
-        let tstamp = u32::from_be_bytes(buf[5..=8].try_into().unwrap());
-        let ksz = u32::from_be_bytes(buf[9..=12].try_into().unwrap());
-        let vsz = u32::from_be_bytes(buf[13..=16].try_into().unwrap());
-
-        let k_start = 17;
-        let k_end = 17 + ksz as usize;
-        let v_end = k_end + vsz as usize;
-        let crc = calc_crc(tstamp, ksz, vsz, &buf[k_start..k_end], &buf[k_end..v_end]);
-
-        if entry_crc == crc {
-            Ok(Bytes::copy_from_slice(&buf[k_end..v_end]))
-        } else {
-            Err(HydraDBError::FileCorruptionError(
-                entry.file_id,
-                entry_crc,
-                crc,
-            ))
+            if Self::is_visible(&txn, &entry) && entry_crc == crc {
+                val = Bytes::copy_from_slice(&buf[k_end..v_end]);
+                break;
+            } else {
+                return Err(HydraDBError::FileCorruptionError(
+                    entry.file_id,
+                    entry_crc,
+                    crc,
+                ));
+            }
         }
+
+        Ok(val)
     }
 
     /// gets the value, if present, for the given key `k`
-    pub fn get(&self, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
+    pub fn get(&self, txn: &Txn, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
         if let Some(in_mem_entry) = self.key_dir.get(&k) {
-            Ok(Some(self.read_value_from_file(k.as_ref(), &in_mem_entry)?))
+            Ok(Some(self.read_value_from_file(
+                txn,
+                k.as_ref(),
+                &in_mem_entry,
+            )?))
         } else {
             Ok(None)
         }

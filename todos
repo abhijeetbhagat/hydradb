@@ -6,5 +6,7 @@
 [x] optimize file opening during reading
 [x] profile & optimize merging
 [x] move profiling to criterion
+[ ] implement batched put
+[ ] implement map() to perform op on all kv pairs
 [ ] optimize allocations in to_db_entry, to_hint_entry functions
 [ ] durability analysis

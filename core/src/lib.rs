@@ -5,4 +5,5 @@ pub mod hint_file_iter;
 pub mod hydradb;
 pub mod key_dir;
 pub mod restore;
-pub mod utils;
+pub mod txn;
+pub(crate) mod utils;
