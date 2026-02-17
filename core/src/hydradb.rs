@@ -1,22 +1,18 @@
 use crate::data_file_iter::{DataFileEntry, OptimizedDataFileIterator};
+use crate::error::{HydraDBError, HydraDBResult};
 use crate::key_dir::{KeyDir, KeyDirEntry};
 use crate::restore::*;
-use crate::txn::Txn;
 use crate::utils::{calc_crc, to_db_entry, to_hint_entry};
-// use anyhow::Result;
-use crate::error::{HydraDBError, HydraDBResult};
-use crate::txn::{IsolationLevel, TxnState};
 use bytes::Bytes;
 use log::debug;
 use mini_moka::sync::Cache;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
 use std::fs::{DirBuilder, File};
 use std::io::{BufWriter, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -49,12 +45,6 @@ pub struct HydraDB {
 
     /// for caching files during reads
     file_cache: Cache<usize, Arc<File>>,
-
-    /// monotonically increasing txn id
-    cur_txn_id: AtomicU32,
-
-    /// track txns
-    txn_states: HashMap<u32, TxnState>,
 }
 
 impl HydraDB {
@@ -143,44 +133,14 @@ impl HydraDB {
         )
     }
 
-    pub fn begin_txn(&mut self) -> Txn {
-        // SAFETY: relaxed because we dont care about other threads
-        let new_txn_id = self
-            .cur_txn_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        let txn = Txn::new(new_txn_id, IsolationLevel::ReadUncommitted);
-
-        self.txn_states.insert(new_txn_id, TxnState::InProgress);
-
-        txn
-    }
-
-    pub fn commit(&mut self, txn: &mut Txn) {
-        self.complete_txn(txn, TxnState::Committed);
-    }
-
-    pub fn abort(&mut self, txn: &mut Txn) {
-        self.complete_txn(txn, TxnState::Aborted);
-    }
-
-    fn complete_txn(&mut self, txn: &mut Txn, state: TxnState) {
-        txn.set_state(state.clone());
-        self.txn_states.insert(txn.id(), state);
-    }
-
-    fn get_txn_state(&self, id: u32) -> Option<TxnState> {
-        self.txn_states.get(&id).cloned()
-    }
-
     /// get all kv pairs for snapshotting.
     ///
     /// the format is [[tstamp|key len|key|val len|val]]
-    pub fn get_key_entries(&self) -> impl Iterator<Item = HydraDBResult<(u32, u32, Bytes, Bytes)>> {
+    pub fn get_key_entries(&self) -> impl Iterator<Item = HydraDBResult<(u32, Bytes, Bytes)>> {
         self.key_dir.entries().map(|keydir_entry| {
             let key = keydir_entry.key().clone();
             match self.read_value_from_file(&key, &keydir_entry) {
-                Ok(val) => Ok((keydir_entry.tstamp, keydir_entry.txn_id, key, val)),
+                Ok(val) => Ok((keydir_entry.tstamp, key, val)),
                 Err(e) => Err(e),
             }
         })
@@ -191,79 +151,51 @@ impl HydraDB {
         self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn is_visible(txn: &Txn, val: &KeyDirEntry) -> bool {
-        todo!("impl this")
-    }
-
     /// reads and validates a value from the data file for the given key entry
-    fn read_value_from_file(
-        &self,
-        txn: &Txn,
-        k: &[u8],
-        val_entries: &Vec<KeyDirEntry>,
-    ) -> HydraDBResult<Bytes> {
-        let mut val = Bytes::new();
-
-        for entry in val_entries.iter().rev() {
-            let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
-                arcd_file.clone()
-            } else {
-                self.file_cache.insert(
-                    entry.file_id,
-                    Arc::new(
-                        File::options()
-                            .read(true)
-                            .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
-                    ),
-                );
-                self.file_cache.get(&entry.file_id).unwrap().clone()
-            };
-
-            let entry_len = 17 + k.len() + entry.val_sz as usize;
-            let mut buf = vec![0; entry_len];
-            file.read_exact_at(&mut buf, entry.val_pos)?;
-
-            let entry_crc = u32::from_be_bytes(buf[1..=4].try_into().unwrap());
-            let tstamp = u32::from_be_bytes(buf[5..=8].try_into().unwrap());
-            let txn_id = u32::from_be_bytes(buf[9..=12].try_into().unwrap());
-            let ksz = u32::from_be_bytes(buf[13..=16].try_into().unwrap());
-            let vsz = u32::from_be_bytes(buf[17..=20].try_into().unwrap());
-
-            let k_start = 17;
-            let k_end = 17 + ksz as usize;
-            let v_end = k_end + vsz as usize;
-            let crc = calc_crc(
-                tstamp,
-                txn_id,
-                ksz,
-                vsz,
-                &buf[k_start..k_end],
-                &buf[k_end..v_end],
+    fn read_value_from_file(&self, k: &[u8], entry: &KeyDirEntry) -> HydraDBResult<Bytes> {
+        let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
+            arcd_file.clone()
+        } else {
+            self.file_cache.insert(
+                entry.file_id,
+                Arc::new(
+                    File::options()
+                        .read(true)
+                        .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
+                ),
             );
+            self.file_cache.get(&entry.file_id).unwrap().clone()
+        };
 
-            if Self::is_visible(&txn, &entry) && entry_crc == crc {
-                val = Bytes::copy_from_slice(&buf[k_end..v_end]);
-                break;
-            } else {
-                return Err(HydraDBError::FileCorruptionError(
-                    entry.file_id,
-                    entry_crc,
-                    crc,
-                ));
-            }
+        let entry_len = 17 + k.len() + entry.val_sz as usize;
+        let mut buf = vec![0; entry_len];
+        file.read_exact_at(&mut buf, entry.val_pos)?;
+
+        let entry_crc = u32::from_be_bytes(buf[1..=4].try_into().unwrap());
+        let tstamp = u32::from_be_bytes(buf[5..=8].try_into().unwrap());
+        let ksz = u32::from_be_bytes(buf[9..=12].try_into().unwrap());
+        let vsz = u32::from_be_bytes(buf[13..=16].try_into().unwrap());
+
+        let k_start = 17;
+        let k_end = 17 + ksz as usize;
+        let v_end = k_end + vsz as usize;
+        let crc = calc_crc(tstamp, ksz, vsz, &buf[k_start..k_end], &buf[k_end..v_end]);
+
+        if entry_crc == crc {
+            Ok(Bytes::copy_from_slice(&buf[k_end..v_end]))
+        } else {
+            Err(HydraDBError::FileCorruptionError(
+                entry.file_id,
+                entry_crc,
+                crc,
+            ))
         }
-
-        Ok(val)
     }
 
     /// gets the value, if present, for the given key `k`
-    pub fn get(&self, txn: &Txn, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
+    pub fn get(&self, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
         if let Some(in_mem_entry) = self.key_dir.get(&k) {
-            Ok(Some(self.read_value_from_file(
-                txn,
-                k.as_ref(),
-                &in_mem_entry,
-            )?))
+            Ok(Some(self.read_value_from_file(k.as_ref(), &in_mem_entry)?))
         } else {
             Ok(None)
         }
@@ -326,10 +258,9 @@ impl HydraDB {
 
         let file_id = cur_id;
         let ksz = k.len() as u32;
-        let val_pos = writer.last_val_offset; // points to start byte of the crc of this record
+        let val_pos = writer.last_val_offset;
         let vsz = v.len() as u32;
-        writer.last_val_offset += 17 + ksz as u64 + vsz as u64; // 17 bytes header size
-        //
+        writer.last_val_offset += 17 + ksz as u64 + vsz as u64;
         let crc = calc_crc(tstamp, ksz, vsz, &k, &v);
 
         let entry = to_db_entry(0, crc, tstamp, &k, &v);
@@ -341,7 +272,7 @@ impl HydraDB {
 
         writer.cur_file_size += 17u64 + k.len() as u64 + v.len() as u64;
 
-        // then write to im
+        // then write to in-mem index
         self.key_dir.put(
             k.to_owned(),
             KeyDirEntry::new(file_id, vsz, val_pos, tstamp),
@@ -352,12 +283,8 @@ impl HydraDB {
 
     /// deletes the given key
     pub fn del(&self, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
-        // TODO if file almost full, then create new file, bump id
         let k = k.as_ref();
-
-        // mark entry as deleted
         let k_exists = self.mark_deleted(k)?;
-
         Ok(k_exists)
     }
 
@@ -369,9 +296,6 @@ impl HydraDB {
         if k_exists {
             debug!("cur file size {}", writer.cur_file_size);
             if (17u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
-                // SAFETY: it is safe to use relaxed ordering here since we are locking
-                // the writer at the beginning of this method. therefore, everything after
-                // will be sequential execution
                 let old_cur_id = self
                     .cur_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -393,7 +317,7 @@ impl HydraDB {
             };
 
             let ksz = k.len() as u32;
-            writer.last_val_offset += 17 + ksz as u64; // 17 bytes header size
+            writer.last_val_offset += 17 + ksz as u64;
             let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
             let crc = calc_crc(tstamp, ksz, 0, k, &[]);
 
@@ -406,7 +330,6 @@ impl HydraDB {
 
             writer.cur_file_size += 17u64 + k.len() as u64;
 
-            // then del from im
             self.key_dir.del(k);
         }
 
@@ -415,49 +338,27 @@ impl HydraDB {
 
     /// merges old files into a single file & generates a hint file
     pub fn merge(&self) -> HydraDBResult<()> {
-        // note: merging may run concurrently with a write operation
-        //
-        // the goal of merge is to create a hint file.
-        // it shoudn't modify/delete any old files until the hint file is completed.
-        // it shouldn't modify/delete the active file.
-        // it should refer to the current keydir when building the hint file.
-        // after the hint file is created, all old files should be deleted.
-        //
-
-        // no merging if no old files
         let cur_id = self.cur_id.load(std::sync::atomic::Ordering::Acquire);
         if cur_id == 0 {
             return Ok(());
         }
 
-        // get all the files in the current cask
         let mut files: Vec<usize> = fs::read_dir(format!("./{}", &self.cur_cask))?
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
                 let path = entry.path();
-
                 if !path.is_file() {
                     return None;
                 }
-
                 path.file_name()
                     .and_then(|name| name.to_str())
                     .and_then(|name| name.parse::<usize>().ok())
             })
-            .filter(|file_id| {
-                // we do this check because a concurrent write operation may
-                // create a new file while merging is in progress. so we select
-                // all files that are less than the cur_id that was fixed at the
-                // beginning of the merge
-                *file_id < cur_id
-            })
+            .filter(|file_id| *file_id < cur_id)
             .collect();
 
-        // sort them in increasing order starting with file lowest number
-        // (an already merged file may also exist)
         files.sort();
 
-        // open a temp file for storing merged data
         let mut temp_file = BufWriter::new(
             File::options()
                 .create(true)
@@ -466,7 +367,6 @@ impl HydraDB {
         );
         let mut temp_file_has_data = false;
 
-        // open hint file for storing hint data
         let mut hint_file = BufWriter::new(
             File::options()
                 .create(true)
@@ -477,20 +377,13 @@ impl HydraDB {
         let mut cur_val_offset = 0;
         let mut file_entry = DataFileEntry::new();
 
-        // merge all files except the last one (active file)
         for file_id in &files {
             let mut file_iter =
                 OptimizedDataFileIterator::new(format!("./{}/{}", self.cur_cask, file_id))?;
 
             while file_iter.next_into(&mut file_entry).is_some() {
                 if let Some(entry) = self.key_dir.get(&file_entry.key) {
-                    // key present in keydir
-
-                    // check if the current old file has the valid record verified by presence of
-                    // entry in the keydir
                     if entry.file_id == *file_id && entry.val_pos == file_entry.val_pos {
-                        // if yes, then the entry is latest and can be recorded in the hint file
-                        // and the merged file
                         let entry = to_db_entry(
                             0,
                             file_entry.crc,
@@ -501,7 +394,6 @@ impl HydraDB {
                         temp_file.write_all(&entry)?;
                         temp_file.write_all(&file_entry.key)?;
                         temp_file.write_all(&file_entry.val)?;
-                        // temp_file.write_all(&entry)?;
                         temp_file_has_data = true;
 
                         let val_pos = cur_val_offset;
@@ -525,20 +417,13 @@ impl HydraDB {
                                 tstamp: file_entry.tstamp,
                             },
                         );
-                    } else {
-                        // key could be present in the active file or a newer old file getting
-                        // processed in future iterations of this loop.
-                        // so do nothing.
                     }
-                } else {
-                    // key deleted so skip processing it
                 }
             }
         }
 
         for file_id in &files {
             debug!("rming ./{}/{}", self.cur_cask, file_id);
-
             fs::remove_file(format!("./{}/{}", self.cur_cask, file_id))?;
         }
 
@@ -588,9 +473,7 @@ mod tests {
 
     #[test]
     fn test_logging_and_reading() {
-        let _ = env_logger::builder()
-            .is_test(true) // Ensures output is captured by cargo test
-            .try_init();
+        let _ = env_logger::builder().is_test(true).try_init();
 
         let db = HydraDBBuilder::new()
             .with_cask("logging_and_reading_test")
@@ -723,9 +606,7 @@ mod tests {
 
     #[test]
     fn test_merge() {
-        let _ = env_logger::builder()
-            .is_test(true) // Ensures output is captured by cargo test
-            .try_init();
+        let _ = env_logger::builder().is_test(true).try_init();
 
         let db = HydraDBBuilder::new()
             .with_cask("merge_test")
@@ -777,7 +658,6 @@ mod tests {
         let val = val.unwrap();
         assert_eq!(val, Some("rust".into()));
 
-        // merge
         let result = db.merge();
         assert!(result.is_ok());
 
@@ -822,9 +702,7 @@ mod tests {
             assert!(result.is_ok());
             assert_eq!(db.get_active_file(), 1);
         }
-        // the keydir should be now gone
 
-        // restore from hint file
         let db = HydraDBBuilder::new()
             .with_cask("hint_file_restore_test")
             .with_file_limit(60)

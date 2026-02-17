@@ -17,7 +17,7 @@ pub(crate) enum TxnState {
 }
 
 #[derive(Debug)]
-pub(crate) struct Txn {
+pub struct Txn {
     // todo: should be 64 bits?
     id: u32,
     isolation_level: IsolationLevel,
