@@ -1,6 +1,6 @@
 use std::u64;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum IsolationLevel {
     ReadUncommitted,
     ReadCommitted,
@@ -9,7 +9,7 @@ pub(crate) enum IsolationLevel {
     Serializable,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum TxnState {
     InProgress,
     Aborted,
@@ -33,11 +33,18 @@ impl Txn {
         }
     }
 
+    #[inline]
     pub fn id(&self) -> u32 {
         self.id
     }
 
+    #[inline]
     pub fn set_state(&mut self, state: TxnState) {
         self.state = state;
+    }
+
+    #[inline]
+    pub fn isolation_level(&self) -> &IsolationLevel {
+        &self.isolation_level
     }
 }
