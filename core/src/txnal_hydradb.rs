@@ -408,6 +408,69 @@ impl TxnalHydraDB {
         Ok(())
     }
 
+    /// deletes the given key
+    pub fn del(&mut self, txn: &Txn, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
+        let k = k.as_ref();
+        let k_exists = self.mark_deleted(txn, k)?;
+        Ok(k_exists)
+    }
+
+    fn mark_deleted(&mut self, txn: &Txn, k: &[u8]) -> HydraDBResult<bool> {
+        // allow only one writer at a time
+        let mut writer = self.writer.lock().unwrap();
+
+        if let Some(mut entries) = self.key_dir.get_mut(&k) {
+            for entry in entries.iter_mut().rev() {
+                if Self::is_visible(&self.txn_states, txn, entry) {
+                    entry.txn_end_id = txn.id();
+                }
+            }
+        }
+
+        let k_exists = self.key_dir.has_key(k);
+        if k_exists {
+            debug!("cur file size {}", writer.cur_file_size);
+            if (17u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
+                let old_cur_id = self
+                    .cur_id
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let new_cur_id = old_cur_id + 1;
+
+                let file = File::options()
+                    .create(true)
+                    .append(true)
+                    .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
+
+                *writer = WriterState {
+                    writer: BufWriter::new(file),
+                    last_val_offset: 0,
+                    cur_file_size: 0,
+                };
+                new_cur_id
+            } else {
+                self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+            };
+
+            let ksz = k.len() as u32;
+            writer.last_val_offset += 17 + ksz as u64;
+            let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
+            let crc = calc_crc(tstamp, ksz, 0, k, &[]);
+
+            let entry = to_db_entry(1, crc, tstamp, k, &[]);
+
+            writer.writer.write_all(&entry)?;
+            writer.writer.write_all(k)?;
+            writer.writer.write_all(&[])?;
+            writer.writer.flush()?;
+
+            writer.cur_file_size += 17u64 + k.len() as u64;
+
+            self.key_dir.del(k);
+        }
+
+        Ok(k_exists)
+    }
+
     /// lists all the keys in the store
     pub fn list_all(&self) -> Option<Vec<Bytes>> {
         self.key_dir.keys()
