@@ -199,7 +199,9 @@ impl TxnalHydraDB {
         Ok(db)
     }
 
+    // todo: accept isolation level or set default during db creation
     pub fn begin_txn(&mut self) -> Txn {
+        // SAFETY: no reordering affects the increment
         let new_txn_id = self
             .cur_txn_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -266,9 +268,15 @@ impl TxnalHydraDB {
         k: &[u8],
         val_entries: &[TxnalKeyDirEntry],
     ) -> HydraDBResult<Bytes> {
-        let mut val = Bytes::new();
+        let val = Bytes::new();
 
         for entry in val_entries.iter().rev() {
+            println!("entry {:?}", entry);
+
+            if !Self::is_visible(&self.txn_states, txn, entry) {
+                continue;
+            }
+
             let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
                 arcd_file.clone()
             } else {
@@ -280,12 +288,16 @@ impl TxnalHydraDB {
                             .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
                     ),
                 );
+                println!("file inserted in cache");
                 self.file_cache.get(&entry.file_id).unwrap().clone()
             };
 
-            let entry_len = 21 as usize + k.len() + entry.val_sz as usize;
+            let entry_len = 21 + k.len() + entry.val_sz as usize;
+            println!("k len {} entry.val_sz {}", k.len(), entry.val_sz);
             let mut buf = vec![0; entry_len];
-            file.read_exact_at(&mut buf, entry.val_pos)?;
+            let _ = file.read_exact_at(&mut buf, entry.val_pos);
+
+            println!("val read from file: {:?}", buf);
 
             let entry_crc = u32::from_be_bytes(buf[1..=4].try_into().unwrap());
             let tstamp = u32::from_be_bytes(buf[5..=8].try_into().unwrap());
@@ -296,6 +308,7 @@ impl TxnalHydraDB {
             let k_start = 21usize;
             let k_end = k_start + ksz as usize;
             let v_end = k_end + vsz as usize;
+            println!("reading val from val read from {k_end} to {v_end}");
             let crc = calc_crc_txn(
                 tstamp,
                 txn_id,
@@ -305,16 +318,21 @@ impl TxnalHydraDB {
                 &buf[k_end..v_end],
             );
 
-            if Self::is_visible(&self.txn_states, txn, entry) && entry_crc == crc {
-                val = Bytes::copy_from_slice(&buf[k_end..v_end]);
-                break;
-            } else {
+            println!(
+                "val read from {k_end} to {v_end} {}",
+                str::from_utf8(&buf[k_end..v_end]).unwrap()
+            );
+
+            if entry_crc != crc {
+                debug!("crc mismatch");
                 return Err(HydraDBError::FileCorruptionError(
                     entry.file_id,
                     entry_crc,
                     crc,
                 ));
             }
+
+            return Ok(Bytes::copy_from_slice(&buf[k_end..v_end]));
         }
 
         Ok(val)
@@ -323,12 +341,11 @@ impl TxnalHydraDB {
     /// gets the value, if present, for the given key `k`
     pub fn get(&self, txn: &Txn, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
         if let Some(in_mem_entry) = self.key_dir.get(&k) {
-            Ok(Some(self.read_value_from_file(
-                txn,
-                k.as_ref(),
-                &in_mem_entry,
-            )?))
+            let val = self.read_value_from_file(txn, k.as_ref(), &in_mem_entry)?;
+            debug!("val is '{:?}'", val);
+            Ok(Some(val))
         } else {
+            debug!("val is");
             Ok(None)
         }
     }
@@ -388,9 +405,9 @@ impl TxnalHydraDB {
         let vsz = v.len() as u32;
         writer.last_val_offset += 21 + ksz as u64 + vsz as u64;
         let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
-        let crc = calc_crc(tstamp, ksz, vsz, &k, &v);
+        let crc = calc_crc_txn(tstamp, txn.id(), ksz, vsz, &k, &v);
 
-        let entry = to_db_entry(0, crc, tstamp, &k, &v);
+        let entry = to_db_entry_txn(0, crc, tstamp, txn.id(), &k, &v);
 
         writer.writer.write_all(&entry)?;
         writer.writer.write_all(&k)?;
@@ -430,7 +447,7 @@ impl TxnalHydraDB {
         let k_exists = self.key_dir.has_key(k);
         if k_exists {
             debug!("cur file size {}", writer.cur_file_size);
-            if (17u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
+            if (21u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
                 let old_cur_id = self
                     .cur_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -452,7 +469,7 @@ impl TxnalHydraDB {
             };
 
             let ksz = k.len() as u32;
-            writer.last_val_offset += 17 + ksz as u64;
+            writer.last_val_offset += 21 + ksz as u64;
             let tstamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as u32;
             let crc = calc_crc(tstamp, ksz, 0, k, &[]);
 
@@ -463,7 +480,7 @@ impl TxnalHydraDB {
             writer.writer.write_all(&[])?;
             writer.writer.flush()?;
 
-            writer.cur_file_size += 17u64 + k.len() as u64;
+            writer.cur_file_size += 21u64 + k.len() as u64;
 
             self.key_dir.del(k);
         }
@@ -479,8 +496,24 @@ impl TxnalHydraDB {
 
 #[cfg(test)]
 mod tests {
+    use crate::txnal_hydradb::TxnalHydraDB;
+    use log::debug;
+
     #[test]
-    fn name() {
-        todo!();
+    fn test_read_uncommitted() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let mut db = TxnalHydraDB::new("read_committed_test", 100, 5).unwrap();
+        let t1 = db.begin_txn();
+        let _ = db.put(&t1, "abhi", "rust");
+        assert_eq!(db.key_dir.len(), 1);
+
+        let t2 = db.begin_txn();
+        let val = db.get(&t2, "abhi");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert!(val.is_some());
+        let val = val.unwrap();
+        assert_eq!(val, "rust");
     }
 }
