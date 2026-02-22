@@ -43,8 +43,6 @@ pub fn to_hint_entry(tstamp: u32, k: &[u8], v: &[u8], val_pos: u64) -> Vec<u8> {
     o
 }
 
-// --- Transactional versions (include txn_id in the record format) ---
-
 #[inline]
 pub fn calc_crc_txn(tstamp: u32, txn_id: u32, key_sz: u32, val_sz: u32, k: &[u8], v: &[u8]) -> u32 {
     let mut hasher = Hasher::new();

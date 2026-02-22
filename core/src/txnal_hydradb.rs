@@ -109,16 +109,25 @@ struct WriterState {
     cur_file_size: u64,
 }
 
-const HEADER_SIZE: u64 = 21;
-
 /// Transactional version of HydraDB with MVCC support.
 #[derive(Debug)]
 pub struct TxnalHydraDB {
+    /// name of the cask (folder/namespace)
     cur_cask: String,
+
+    /// current file id increases monotonically
     cur_id: AtomicUsize,
+
+    /// in-mem kv map
     key_dir: TxnalKeyDir,
+
+    /// max file size after which a new one gets created
     max_file_size_threshold: u64,
+
+    /// file writer
     writer: Mutex<WriterState>,
+
+    /// for caching files during reads
     file_cache: Cache<usize, Arc<File>>,
 
     /// monotonically increasing txn id
@@ -126,6 +135,9 @@ pub struct TxnalHydraDB {
 
     /// track txn states
     txn_states: HashMap<u32, TxnState>,
+
+    /// isolation level of the db
+    isolation_level: IsolationLevel,
 }
 
 impl TxnalHydraDB {
@@ -133,6 +145,7 @@ impl TxnalHydraDB {
         namespace: T,
         max_file_size_threshold: u64,
         cache_size: u64,
+        isolation_level: IsolationLevel,
     ) -> HydraDBResult<Self> {
         let namespace = namespace.into();
 
@@ -192,6 +205,7 @@ impl TxnalHydraDB {
             file_cache: Cache::new(cache_size),
             cur_txn_id: AtomicU32::new(0),
             txn_states: HashMap::new(),
+            isolation_level,
         };
 
         // TODO: build_key_dir for txnal format
@@ -206,7 +220,7 @@ impl TxnalHydraDB {
             .cur_txn_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-        let txn = Txn::new(new_txn_id, IsolationLevel::ReadUncommitted);
+        let txn = Txn::new(new_txn_id, self.isolation_level.clone());
 
         self.txn_states.insert(new_txn_id, TxnState::InProgress);
 
@@ -234,7 +248,7 @@ impl TxnalHydraDB {
         match txn.isolation_level() {
             IsolationLevel::ReadUncommitted => val.txn_end_id == 0,
             IsolationLevel::ReadCommitted => {
-                // val being used by some other txn
+                // val being used by some other txn not committed yet
                 if val.txn_start_id != txn.id()
                     && let Some(state) = txn_states.get(&val.txn_start_id)
                     && *state != TxnState::Committed
@@ -267,8 +281,8 @@ impl TxnalHydraDB {
         txn: &Txn,
         k: &[u8],
         val_entries: &[TxnalKeyDirEntry],
-    ) -> HydraDBResult<Bytes> {
-        let val = Bytes::new();
+    ) -> HydraDBResult<Option<Bytes>> {
+        let val = None;
 
         for entry in val_entries.iter().rev() {
             println!("entry {:?}", entry);
@@ -332,7 +346,7 @@ impl TxnalHydraDB {
                 ));
             }
 
-            return Ok(Bytes::copy_from_slice(&buf[k_end..v_end]));
+            return Ok(Some(Bytes::copy_from_slice(&buf[k_end..v_end])));
         }
 
         Ok(val)
@@ -343,7 +357,7 @@ impl TxnalHydraDB {
         if let Some(in_mem_entry) = self.key_dir.get(&k) {
             let val = self.read_value_from_file(txn, k.as_ref(), &in_mem_entry)?;
             debug!("val is '{:?}'", val);
-            Ok(Some(val))
+            Ok(val)
         } else {
             debug!("val is");
             Ok(None)
@@ -436,7 +450,7 @@ impl TxnalHydraDB {
         // allow only one writer at a time
         let mut writer = self.writer.lock().unwrap();
 
-        if let Some(mut entries) = self.key_dir.get_mut(&k) {
+        if let Some(mut entries) = self.key_dir.get_mut(k) {
             for entry in entries.iter_mut().rev() {
                 if Self::is_visible(&self.txn_states, txn, entry) {
                     entry.txn_end_id = txn.id();
@@ -496,14 +510,20 @@ impl TxnalHydraDB {
 
 #[cfg(test)]
 mod tests {
-    use crate::txnal_hydradb::TxnalHydraDB;
-    use log::debug;
+    use crate::txn::IsolationLevel;
+    use crate::{txnal_builder::TxnalHydraDBBuilder, txnal_hydradb::TxnalHydraDB};
+    use std::fs;
 
     #[test]
     fn test_read_uncommitted() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let mut db = TxnalHydraDB::new("read_committed_test", 100, 5).unwrap();
+        let mut db = TxnalHydraDBBuilder::new()
+            .with_cask("ruc_test")
+            .with_file_limit(100)
+            .with_cache_size(5)
+            .build()
+            .unwrap();
         let t1 = db.begin_txn();
         let _ = db.put(&t1, "abhi", "rust");
         assert_eq!(db.key_dir.len(), 1);
@@ -515,5 +535,92 @@ mod tests {
         assert!(val.is_some());
         let val = val.unwrap();
         assert_eq!(val, "rust");
+
+        let _ = fs::remove_dir_all("./ruc_test");
+    }
+
+    #[test]
+    fn test_rc_reading_val_used_by_uncommitted_txn() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let mut db = TxnalHydraDBBuilder::new()
+            .with_cask("rc_reading_val_used_by_uncommitted_txn")
+            .with_file_limit(100)
+            .with_cache_size(5)
+            .with_isolation_level(IsolationLevel::ReadCommitted)
+            .build()
+            .unwrap();
+
+        let t1 = db.begin_txn();
+        let _ = db.put(&t1, "abhi", "rust");
+        assert_eq!(db.key_dir.len(), 1);
+
+        let t2 = db.begin_txn();
+        let val = db.get(&t2, "abhi");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert!(val.is_none());
+
+        let _ = fs::remove_dir_all("./rc_reading_val_used_by_uncommitted_txn");
+    }
+
+    #[test]
+    fn test_rc_reading_val_deleted_by_other_txn() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let mut db = TxnalHydraDBBuilder::new()
+            .with_cask("rc_reading_val_deleted_by_other_txn")
+            .with_file_limit(100)
+            .with_cache_size(5)
+            .with_isolation_level(IsolationLevel::ReadCommitted)
+            .build()
+            .unwrap();
+
+        let mut t1 = db.begin_txn();
+        let _ = db.put(&t1, "abhi", "rust");
+        assert_eq!(db.key_dir.len(), 1);
+        db.commit(&mut t1);
+
+        let mut t1 = db.begin_txn();
+        let _ = db.del(&t1, "abhi");
+        assert_eq!(db.key_dir.len(), 0);
+        db.commit(&mut t1);
+
+        let t2 = db.begin_txn();
+        let val = db.get(&t2, "abhi");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert!(val.is_none());
+
+        let _ = fs::remove_dir_all("./rc_reading_val_deleted_by_other_txn");
+    }
+
+    #[test]
+    fn test_rc_reading_val_deleted_by_self() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let mut db = TxnalHydraDBBuilder::new()
+            .with_cask("rc_reading_val_deleted_by_self")
+            .with_file_limit(100)
+            .with_cache_size(5)
+            .with_isolation_level(IsolationLevel::ReadCommitted)
+            .build()
+            .unwrap();
+
+        let mut t1 = db.begin_txn();
+        let _ = db.put(&t1, "abhi", "rust");
+        assert_eq!(db.key_dir.len(), 1);
+        db.commit(&mut t1);
+
+        let t2 = db.begin_txn();
+        let _ = db.del(&t2, "abhi");
+        assert_eq!(db.key_dir.len(), 0);
+
+        let val = db.get(&t2, "abhi");
+        assert!(val.is_ok());
+        let val = val.unwrap();
+        assert!(val.is_none());
+
+        let _ = fs::remove_dir_all("./rc_reading_val_deleted_by_self");
     }
 }

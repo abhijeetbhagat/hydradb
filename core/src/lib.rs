@@ -6,5 +6,6 @@ pub mod hydradb;
 pub mod key_dir;
 pub mod restore;
 pub mod txn;
+pub mod txnal_builder;
 pub mod txnal_hydradb;
 pub(crate) mod utils;

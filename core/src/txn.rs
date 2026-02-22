@@ -1,7 +1,8 @@
 use std::u64;
 
-#[derive(Debug, Clone)]
-pub(crate) enum IsolationLevel {
+#[derive(Debug, Clone, Default)]
+pub enum IsolationLevel {
+    #[default]
     ReadUncommitted,
     ReadCommitted,
     RepeatableRead,
@@ -10,7 +11,7 @@ pub(crate) enum IsolationLevel {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum TxnState {
+pub enum TxnState {
     InProgress,
     Aborted,
     Committed,
