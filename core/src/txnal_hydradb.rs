@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
 use log::debug;
 use mini_moka::sync::Cache;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::fs;
 use std::fs::{DirBuilder, File};
@@ -134,7 +134,7 @@ pub struct TxnalHydraDB {
     cur_txn_id: AtomicU32,
 
     /// track txn states
-    txn_states: HashMap<u32, TxnState>,
+    txn_states: DashMap<u32, TxnState>,
 
     /// isolation level of the db
     isolation_level: IsolationLevel,
@@ -204,13 +204,23 @@ impl TxnalHydraDB {
             }),
             file_cache: Cache::new(cache_size),
             cur_txn_id: AtomicU32::new(0),
-            txn_states: HashMap::new(),
+            txn_states: DashMap::new(),
             isolation_level,
         };
 
         // TODO: build_key_dir for txnal format
 
         Ok(db)
+    }
+
+    /// gets all in-progress txns
+    fn get_inprogress_txns(&self) -> BTreeSet<u32> {
+        let v = self
+            .txn_states
+            .iter()
+            .filter(|txn| *txn.value() == TxnState::InProgress)
+            .map(|entry| entry.key().clone());
+        BTreeSet::from_iter(v)
     }
 
     // todo: accept isolation level or set default during db creation
@@ -220,7 +230,9 @@ impl TxnalHydraDB {
             .cur_txn_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-        let txn = Txn::new(new_txn_id, self.isolation_level.clone());
+
+        let mut txn = Txn::new(new_txn_id, self.isolation_level.clone());
+        txn.set_inprogress_txns(self.get_inprogress_txns());
 
         self.txn_states.insert(new_txn_id, TxnState::InProgress);
 
@@ -241,10 +253,10 @@ impl TxnalHydraDB {
     }
 
     fn get_txn_state(&self, id: u32) -> Option<TxnState> {
-        self.txn_states.get(&id).cloned()
+        self.txn_states.get(&id).map(|v| v.clone())
     }
 
-    fn is_visible(txn_states: &HashMap<u32, TxnState>, txn: &Txn, val: &TxnalKeyDirEntry) -> bool {
+    fn is_visible(txn_states: &DashMap<u32, TxnState>, txn: &Txn, val: &TxnalKeyDirEntry) -> bool {
         match txn.isolation_level() {
             IsolationLevel::ReadUncommitted => val.txn_end_id == 0,
             IsolationLevel::ReadCommitted => {
@@ -263,6 +275,42 @@ impl TxnalHydraDB {
 
                 // val deleted by some other txn
                 if val.txn_end_id > 0
+                    && let Some(state) = txn_states.get(&val.txn_end_id)
+                    && *state == TxnState::Committed
+                {
+                    return false;
+                }
+
+                true
+            }
+            IsolationLevel::RepeatableRead => {
+                // val being used by txn started after the current one
+                if val.txn_start_id > txn.id() {
+                    return false;
+                }
+
+                // val is being used by an inprogress txn
+                if txn.get_inprogress_txns().contains(&val.txn_start_id) {
+                    return false;
+                }
+
+                // same checks as read committed
+                // val being used by some other txn not committed yet
+                if val.txn_start_id != txn.id()
+                    && let Some(state) = txn_states.get(&val.txn_start_id)
+                    && *state != TxnState::Committed
+                {
+                    return false;
+                }
+
+                // val deleted by current txn
+                if val.txn_end_id == txn.id() {
+                    return false;
+                }
+
+                // val deleted by some other committed txn before this txn
+                if val.txn_end_id > 0
+                    && val.txn_end_id < txn.id()
                     && let Some(state) = txn_states.get(&val.txn_end_id)
                     && *state == TxnState::Committed
                 {
@@ -511,7 +559,7 @@ impl TxnalHydraDB {
 #[cfg(test)]
 mod tests {
     use crate::txn::IsolationLevel;
-    use crate::{txnal_builder::TxnalHydraDBBuilder, txnal_hydradb::TxnalHydraDB};
+    use crate::txnal_builder::TxnalHydraDBBuilder;
     use std::fs;
 
     #[test]
@@ -622,5 +670,45 @@ mod tests {
         assert!(val.is_none());
 
         let _ = fs::remove_dir_all("./rc_reading_val_deleted_by_self");
+    }
+
+    #[test]
+    fn test_rr() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let mut db = TxnalHydraDBBuilder::new()
+            .with_cask("rr_test")
+            .with_file_limit(100)
+            .with_cache_size(5)
+            .with_isolation_level(IsolationLevel::RepeatableRead)
+            .build()
+            .unwrap();
+
+        let mut t1 = db.begin_txn();
+        let mut t2 = db.begin_txn();
+
+        let _ = db.put(&t1, "abhi", "rust");
+        let v = db.get(&t1, "abhi");
+        assert!(v.is_ok());
+        let v = v.unwrap();
+        assert_eq!(v, Some("rust".into()));
+
+        let v = db.get(&t2, "abhi");
+        assert!(v.is_ok());
+        assert_eq!(v.unwrap(), None);
+
+        db.commit(&mut t1);
+
+        let v = db.get(&t2, "abhi");
+        assert!(v.is_ok());
+        assert_eq!(v.unwrap(), None);
+
+        let t3 = db.begin_txn();
+        let v = db.get(&t3, "abhi");
+        assert!(v.is_ok());
+        let v = v.unwrap();
+        assert_eq!(v, Some("rust".into()));
+
+        let _ = fs::remove_dir_all("./rr_test");
     }
 }

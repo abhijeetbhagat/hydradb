@@ -382,42 +382,39 @@ impl HydraDB {
                 OptimizedDataFileIterator::new(format!("./{}/{}", self.cur_cask, file_id))?;
 
             while file_iter.next_into(&mut file_entry).is_some() {
-                if let Some(entry) = self.key_dir.get(&file_entry.key) {
-                    if entry.file_id == *file_id && entry.val_pos == file_entry.val_pos {
-                        let entry = to_db_entry(
-                            0,
-                            file_entry.crc,
-                            file_entry.tstamp,
-                            &file_entry.key,
-                            &file_entry.val,
-                        );
-                        temp_file.write_all(&entry)?;
-                        temp_file.write_all(&file_entry.key)?;
-                        temp_file.write_all(&file_entry.val)?;
-                        temp_file_has_data = true;
+                if let Some(entry) = self.key_dir.get(&file_entry.key)
+                    && entry.file_id == *file_id
+                    && entry.val_pos == file_entry.val_pos
+                {
+                    let entry = to_db_entry(
+                        0,
+                        file_entry.crc,
+                        file_entry.tstamp,
+                        &file_entry.key,
+                        &file_entry.val,
+                    );
+                    temp_file.write_all(&entry)?;
+                    temp_file.write_all(&file_entry.key)?;
+                    temp_file.write_all(&file_entry.val)?;
+                    temp_file_has_data = true;
 
-                        let val_pos = cur_val_offset;
-                        cur_val_offset += entry.len() as u64
-                            + file_entry.key.len() as u64
-                            + file_entry.val.len() as u64;
-                        let entry = to_hint_entry(
-                            file_entry.tstamp,
-                            &file_entry.key,
-                            &file_entry.val,
+                    let val_pos = cur_val_offset;
+                    cur_val_offset += entry.len() as u64
+                        + file_entry.key.len() as u64
+                        + file_entry.val.len() as u64;
+                    let entry =
+                        to_hint_entry(file_entry.tstamp, &file_entry.key, &file_entry.val, val_pos);
+                    hint_file.write_all(&entry)?;
+
+                    self.key_dir.put(
+                        file_entry.key.clone(),
+                        KeyDirEntry {
+                            file_id: cur_id - 1,
+                            val_sz: file_entry.val.len() as u32,
                             val_pos,
-                        );
-                        hint_file.write_all(&entry)?;
-
-                        self.key_dir.put(
-                            file_entry.key.clone(),
-                            KeyDirEntry {
-                                file_id: cur_id - 1,
-                                val_sz: file_entry.val.len() as u32,
-                                val_pos,
-                                tstamp: file_entry.tstamp,
-                            },
-                        );
-                    }
+                            tstamp: file_entry.tstamp,
+                        },
+                    );
                 }
             }
         }
