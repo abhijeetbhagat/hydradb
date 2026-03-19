@@ -1,4 +1,5 @@
-use std::{collections::BTreeSet, u64};
+use bytes::Bytes;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Default)]
 pub enum IsolationLevel {
@@ -24,6 +25,8 @@ pub struct Txn {
     isolation_level: IsolationLevel,
     state: TxnState,
     inprogress_txns: BTreeSet<u32>,
+    write_set: BTreeSet<Bytes>,
+    read_set: BTreeSet<Bytes>,
 }
 
 impl Txn {
@@ -33,6 +36,8 @@ impl Txn {
             isolation_level,
             state: TxnState::InProgress,
             inprogress_txns: BTreeSet::new(),
+            write_set: BTreeSet::new(),
+            read_set: BTreeSet::new(),
         }
     }
 
@@ -59,5 +64,10 @@ impl Txn {
     #[inline]
     pub fn get_inprogress_txns(&self) -> &BTreeSet<u32> {
         &self.inprogress_txns
+    }
+
+    #[inline]
+    pub fn add_to_write_set(&mut self, k: Bytes) {
+        self.write_set.insert(k);
     }
 }

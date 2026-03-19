@@ -1,3 +1,6 @@
+use bytes::Bytes;
+use std::collections::BTreeSet;
+
 use crc32fast::Hasher;
 
 #[inline]
@@ -93,4 +96,9 @@ pub fn to_hint_entry_txn(tstamp: u32, txn_id: u32, k: &[u8], v: &[u8], val_pos: 
     o.extend_from_slice(&val_pos.to_be_bytes());
     o.extend_from_slice(k);
     o
+}
+
+/// check if sets `s1` & `s2` share common elements
+pub fn sets_share_item(s1: &BTreeSet<Bytes>, s2: &BTreeSet<Bytes>) -> bool {
+    !s1.is_disjoint(s2)
 }

@@ -319,6 +319,10 @@ impl TxnalHydraDB {
 
                 true
             }
+            IsolationLevel::Snapshot => {
+                todo!()
+
+            }
             _ => true,
         }
     }
@@ -415,7 +419,7 @@ impl TxnalHydraDB {
     /// puts the key `k` & value `v` pair
     pub fn put(
         &mut self,
-        txn: &Txn,
+        txn: &mut Txn,
         k: impl Into<Bytes>,
         v: impl Into<Bytes>,
     ) -> HydraDBResult<()> {
@@ -484,17 +488,19 @@ impl TxnalHydraDB {
             TxnalKeyDirEntry::new(file_id, vsz, val_pos, tstamp, txn.id(), 0),
         );
 
+        txn.add_to_write_set(k);
+
         Ok(())
     }
 
     /// deletes the given key
-    pub fn del(&mut self, txn: &Txn, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
+    pub fn del(&mut self, txn: &mut Txn, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
         let k = k.as_ref();
         let k_exists = self.mark_deleted(txn, k)?;
         Ok(k_exists)
     }
 
-    fn mark_deleted(&mut self, txn: &Txn, k: &[u8]) -> HydraDBResult<bool> {
+    fn mark_deleted(&mut self, txn: &mut Txn, k: &[u8]) -> HydraDBResult<bool> {
         // allow only one writer at a time
         let mut writer = self.writer.lock().unwrap();
 
@@ -545,6 +551,7 @@ impl TxnalHydraDB {
             writer.cur_file_size += 21u64 + k.len() as u64;
 
             self.key_dir.del(k);
+            txn.add_to_write_set(Bytes::copy_from_slice(k));
         }
 
         Ok(k_exists)
@@ -572,8 +579,8 @@ mod tests {
             .with_cache_size(5)
             .build()
             .unwrap();
-        let t1 = db.begin_txn();
-        let _ = db.put(&t1, "abhi", "rust");
+        let mut t1 = db.begin_txn();
+        let _ = db.put(&mut t1, "abhi", "rust");
         assert_eq!(db.key_dir.len(), 1);
 
         let t2 = db.begin_txn();
@@ -599,8 +606,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let t1 = db.begin_txn();
-        let _ = db.put(&t1, "abhi", "rust");
+        let mut t1 = db.begin_txn();
+        let _ = db.put(&mut t1, "abhi", "rust");
         assert_eq!(db.key_dir.len(), 1);
 
         let t2 = db.begin_txn();
@@ -625,7 +632,7 @@ mod tests {
             .unwrap();
 
         let mut t1 = db.begin_txn();
-        let _ = db.put(&t1, "abhi", "rust");
+        let _ = db.put(&mut t1, "abhi", "rust");
         assert_eq!(db.key_dir.len(), 1);
         db.commit(&mut t1);
 
@@ -656,7 +663,7 @@ mod tests {
             .unwrap();
 
         let mut t1 = db.begin_txn();
-        let _ = db.put(&t1, "abhi", "rust");
+        let _ = db.put(&mut t1, "abhi", "rust");
         assert_eq!(db.key_dir.len(), 1);
         db.commit(&mut t1);
 
@@ -687,7 +694,7 @@ mod tests {
         let mut t1 = db.begin_txn();
         let mut t2 = db.begin_txn();
 
-        let _ = db.put(&t1, "abhi", "rust");
+        let _ = db.put(&mut t1, "abhi", "rust");
         let v = db.get(&t1, "abhi");
         assert!(v.is_ok());
         let v = v.unwrap();
