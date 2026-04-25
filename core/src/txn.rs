@@ -1,7 +1,10 @@
 use bytes::Bytes;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
+use crate::txnal_hydradb::TxnalHydraDBInner;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum IsolationLevel {
     #[default]
     ReadUncommitted,
@@ -27,10 +30,11 @@ pub struct Txn {
     inprogress_txns: BTreeSet<u32>,
     write_set: BTreeSet<Bytes>,
     read_set: BTreeSet<Bytes>,
+    db: Arc<TxnalHydraDBInner>,
 }
 
 impl Txn {
-    pub fn new(id: u32, isolation_level: IsolationLevel) -> Self {
+    pub fn new(id: u32, isolation_level: IsolationLevel, db: Arc<TxnalHydraDBInner>) -> Self {
         Self {
             id,
             isolation_level,
@@ -38,6 +42,7 @@ impl Txn {
             inprogress_txns: BTreeSet::new(),
             write_set: BTreeSet::new(),
             read_set: BTreeSet::new(),
+            db,
         }
     }
 
@@ -69,5 +74,10 @@ impl Txn {
     #[inline]
     pub fn add_to_write_set(&mut self, k: Bytes) {
         self.write_set.insert(k);
+    }
+
+    #[inline]
+    pub fn get_write_set(&self) -> &BTreeSet<Bytes> {
+        &self.write_set
     }
 }

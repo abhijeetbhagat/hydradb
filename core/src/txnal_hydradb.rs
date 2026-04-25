@@ -2,7 +2,9 @@ use crate::data_file_iter::{DataFileEntry, OptimizedDataFileIterator};
 use crate::error::{HydraDBError, HydraDBResult};
 use crate::txn::Txn;
 use crate::txn::{IsolationLevel, TxnState};
-use crate::utils::{calc_crc, calc_crc_txn, to_db_entry, to_db_entry_txn, to_hint_entry_txn};
+use crate::utils::{
+    calc_crc, calc_crc_txn, sets_share_item, to_db_entry, to_db_entry_txn, to_hint_entry_txn,
+};
 use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::one::RefMut;
@@ -72,7 +74,7 @@ impl TxnalKeyDir {
         self.kv_store.get(k.as_ref()).map(|entry| entry.clone())
     }
 
-    fn get_mut(&mut self, k: impl AsRef<[u8]>) -> Option<RefMut<'_, Bytes, Vec<TxnalKeyDirEntry>>> {
+    fn get_mut(&self, k: impl AsRef<[u8]>) -> Option<RefMut<'_, Bytes, Vec<TxnalKeyDirEntry>>> {
         self.kv_store.get_mut(k.as_ref())
     }
 
@@ -109,9 +111,8 @@ struct WriterState {
     cur_file_size: u64,
 }
 
-/// Transactional version of HydraDB with MVCC support.
 #[derive(Debug)]
-pub struct TxnalHydraDB {
+pub(crate) struct TxnalHydraDBInner {
     /// name of the cask (folder/namespace)
     cur_cask: String,
 
@@ -138,6 +139,14 @@ pub struct TxnalHydraDB {
 
     /// isolation level of the db
     isolation_level: IsolationLevel,
+
+    txn_write_sets: DashMap<u32, BTreeSet<Bytes>>,
+}
+
+/// Transactional version of HydraDB with MVCC support.
+#[derive(Debug)]
+pub struct TxnalHydraDB {
+    inner: Arc<TxnalHydraDBInner>,
 }
 
 impl TxnalHydraDB {
@@ -192,7 +201,7 @@ impl TxnalHydraDB {
             .append(true)
             .open(format!("./{}/{}", namespace, cur_id))?;
 
-        let db = Self {
+        let inner = TxnalHydraDBInner {
             cur_cask: namespace,
             cur_id: cur_id.into(),
             key_dir: TxnalKeyDir::new(),
@@ -206,16 +215,20 @@ impl TxnalHydraDB {
             cur_txn_id: AtomicU32::new(0),
             txn_states: DashMap::new(),
             isolation_level,
+            txn_write_sets: DashMap::new(),
         };
 
         // TODO: build_key_dir for txnal format
 
-        Ok(db)
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
     }
 
     /// gets all in-progress txns
     fn get_inprogress_txns(&self) -> BTreeSet<u32> {
         let v = self
+            .inner
             .txn_states
             .iter()
             .filter(|txn| *txn.value() == TxnState::InProgress)
@@ -224,36 +237,80 @@ impl TxnalHydraDB {
     }
 
     // todo: accept isolation level or set default during db creation
-    pub fn begin_txn(&mut self) -> Txn {
+    pub fn begin_txn(&self) -> Txn {
         // SAFETY: no reordering affects the increment
         let new_txn_id = self
+            .inner
             .cur_txn_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
 
-        let mut txn = Txn::new(new_txn_id, self.isolation_level.clone());
+        let mut txn = Txn::new(
+            new_txn_id,
+            self.inner.isolation_level.clone(),
+            Arc::clone(&self.inner),
+        );
         txn.set_inprogress_txns(self.get_inprogress_txns());
 
-        self.txn_states.insert(new_txn_id, TxnState::InProgress);
+        self.inner
+            .txn_states
+            .insert(new_txn_id, TxnState::InProgress);
 
         txn
     }
 
-    pub fn commit(&mut self, txn: &mut Txn) {
-        self.complete_txn(txn, TxnState::Committed);
+    pub fn commit(&self, txn: &mut Txn) -> HydraDBResult<()> {
+        self.complete_txn(txn, TxnState::Committed)
     }
 
-    pub fn abort(&mut self, txn: &mut Txn) {
-        self.complete_txn(txn, TxnState::Aborted);
+    pub fn abort(&self, txn: &mut Txn) -> HydraDBResult<()> {
+        self.complete_txn(txn, TxnState::Aborted)
     }
 
-    fn complete_txn(&mut self, txn: &mut Txn, state: TxnState) {
+    fn complete_txn(&self, txn: &mut Txn, state: TxnState) -> HydraDBResult<()> {
+        if state == TxnState::Committed
+            && txn.isolation_level() == &IsolationLevel::Snapshot
+            && self.has_conflict(txn)
+        {
+            txn.set_state(TxnState::Aborted);
+            return Err(HydraDBError::WriteWriteConflict);
+        }
+
         txn.set_state(state.clone());
-        self.txn_states.insert(txn.id(), state);
+        self.inner.txn_states.insert(txn.id(), state);
+        Ok(())
+    }
+
+    fn has_conflict(&self, txn: &Txn) -> bool {
+        for tid in txn.get_inprogress_txns() {
+            if let Some(t) = self.inner.txn_states.get(tid)
+                && *t.value() == TxnState::Committed
+                && let Some(other_write_set) = self.inner.txn_write_sets.get(tid)
+                && sets_share_item(txn.get_write_set(), &other_write_set)
+            {
+                return true;
+            }
+        }
+
+        let max_txn_id = self
+            .inner
+            .cur_txn_id
+            .load(std::sync::atomic::Ordering::Relaxed);
+        for tid in txn.id()..=max_txn_id {
+            if let Some(t) = self.inner.txn_states.get(&tid)
+                && *t.value() == TxnState::Committed
+                && let Some(other_write_set) = self.inner.txn_write_sets.get(&tid)
+                && sets_share_item(txn.get_write_set(), &other_write_set)
+            {
+                return true;
+            }
+        }
+
+        false
     }
 
     fn get_txn_state(&self, id: u32) -> Option<TxnState> {
-        self.txn_states.get(&id).map(|v| v.clone())
+        self.inner.txn_states.get(&id).map(|v| v.clone())
     }
 
     fn is_visible(txn_states: &DashMap<u32, TxnState>, txn: &Txn, val: &TxnalKeyDirEntry) -> bool {
@@ -283,7 +340,7 @@ impl TxnalHydraDB {
 
                 true
             }
-            IsolationLevel::RepeatableRead => {
+            IsolationLevel::RepeatableRead | IsolationLevel::Snapshot => {
                 // val being used by txn started after the current one
                 if val.txn_start_id > txn.id() {
                     return false;
@@ -319,10 +376,6 @@ impl TxnalHydraDB {
 
                 true
             }
-            IsolationLevel::Snapshot => {
-                todo!()
-
-            }
             _ => true,
         }
     }
@@ -339,23 +392,23 @@ impl TxnalHydraDB {
         for entry in val_entries.iter().rev() {
             println!("entry {:?}", entry);
 
-            if !Self::is_visible(&self.txn_states, txn, entry) {
+            if !Self::is_visible(&self.inner.txn_states, txn, entry) {
                 continue;
             }
 
-            let file = if let Some(arcd_file) = self.file_cache.get(&entry.file_id) {
+            let file = if let Some(arcd_file) = self.inner.file_cache.get(&entry.file_id) {
                 arcd_file.clone()
             } else {
-                self.file_cache.insert(
+                self.inner.file_cache.insert(
                     entry.file_id,
                     Arc::new(
                         File::options()
                             .read(true)
-                            .open(format!("./{}/{}", self.cur_cask, entry.file_id))?,
+                            .open(format!("./{}/{}", self.inner.cur_cask, entry.file_id))?,
                     ),
                 );
                 println!("file inserted in cache");
-                self.file_cache.get(&entry.file_id).unwrap().clone()
+                self.inner.file_cache.get(&entry.file_id).unwrap().clone()
             };
 
             let entry_len = 21 + k.len() + entry.val_sz as usize;
@@ -406,7 +459,7 @@ impl TxnalHydraDB {
 
     /// gets the value, if present, for the given key `k`
     pub fn get(&self, txn: &Txn, k: impl AsRef<[u8]>) -> HydraDBResult<Option<Bytes>> {
-        if let Some(in_mem_entry) = self.key_dir.get(&k) {
+        if let Some(in_mem_entry) = self.inner.key_dir.get(&k) {
             let val = self.read_value_from_file(txn, k.as_ref(), &in_mem_entry)?;
             debug!("val is '{:?}'", val);
             Ok(val)
@@ -418,7 +471,7 @@ impl TxnalHydraDB {
 
     /// puts the key `k` & value `v` pair
     pub fn put(
-        &mut self,
+        &self,
         txn: &mut Txn,
         k: impl Into<Bytes>,
         v: impl Into<Bytes>,
@@ -427,12 +480,12 @@ impl TxnalHydraDB {
         let v = v.into();
 
         // allow only one writer at a time
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = self.inner.writer.lock().unwrap();
 
         // first mark all entries for this key `k` as deleted by the current txn
-        if let Some(mut entries) = self.key_dir.get_mut(&k) {
+        if let Some(mut entries) = self.inner.key_dir.get_mut(&k) {
             for entry in entries.iter_mut().rev() {
-                if Self::is_visible(&self.txn_states, txn, entry) {
+                if Self::is_visible(&self.inner.txn_states, txn, entry) {
                     entry.txn_end_id = txn.id();
                 }
             }
@@ -440,12 +493,13 @@ impl TxnalHydraDB {
 
         debug!("cur file size {}", writer.cur_file_size);
         let cur_id = if (21 + k.len() as u64 + v.len() as u64 + writer.cur_file_size)
-            >= self.max_file_size_threshold
+            >= self.inner.max_file_size_threshold
         {
             // SAFETY: it is safe to use relaxed ordering here since we are locking
             // the writer at the beginning of this method. therefore, everything after
             // will be sequential execution
             let old_cur_id = self
+                .inner
                 .cur_id
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let new_cur_id = old_cur_id + 1;
@@ -453,7 +507,7 @@ impl TxnalHydraDB {
             let file = File::options()
                 .create(true)
                 .append(true)
-                .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
+                .open(format!("./{}/{}", self.inner.cur_cask, new_cur_id))?;
 
             *writer = WriterState {
                 writer: BufWriter::new(file),
@@ -462,7 +516,7 @@ impl TxnalHydraDB {
             };
             new_cur_id
         } else {
-            self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+            self.inner.cur_id.load(std::sync::atomic::Ordering::Relaxed)
         };
 
         let file_id = cur_id;
@@ -483,40 +537,53 @@ impl TxnalHydraDB {
         writer.cur_file_size += 21u64 + k.len() as u64 + v.len() as u64;
 
         // then append to entries for the current key `k`
-        self.key_dir.put(
+        self.inner.key_dir.put(
             k.to_owned(),
             TxnalKeyDirEntry::new(file_id, vsz, val_pos, tstamp, txn.id(), 0),
         );
 
-        txn.add_to_write_set(k);
+        txn.add_to_write_set(k.clone());
+        self.inner
+            .txn_write_sets
+            .entry(txn.id())
+            .and_modify(|set| {
+                set.insert(k.clone());
+            })
+            .or_insert_with(|| {
+                let mut set = BTreeSet::new();
+                set.insert(k);
+                set
+            });
 
         Ok(())
     }
 
     /// deletes the given key
-    pub fn del(&mut self, txn: &mut Txn, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
+    pub fn del(&self, txn: &mut Txn, k: impl AsRef<[u8]>) -> HydraDBResult<bool> {
         let k = k.as_ref();
         let k_exists = self.mark_deleted(txn, k)?;
         Ok(k_exists)
     }
 
-    fn mark_deleted(&mut self, txn: &mut Txn, k: &[u8]) -> HydraDBResult<bool> {
+    fn mark_deleted(&self, txn: &mut Txn, k: &[u8]) -> HydraDBResult<bool> {
         // allow only one writer at a time
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = self.inner.writer.lock().unwrap();
 
-        if let Some(mut entries) = self.key_dir.get_mut(k) {
+        if let Some(mut entries) = self.inner.key_dir.get_mut(k) {
             for entry in entries.iter_mut().rev() {
-                if Self::is_visible(&self.txn_states, txn, entry) {
+                if Self::is_visible(&self.inner.txn_states, txn, entry) {
                     entry.txn_end_id = txn.id();
                 }
             }
         }
 
-        let k_exists = self.key_dir.has_key(k);
+        let k_exists = self.inner.key_dir.has_key(k);
         if k_exists {
             debug!("cur file size {}", writer.cur_file_size);
-            if (21u64 + k.len() as u64 + writer.cur_file_size) >= self.max_file_size_threshold {
+            if (21u64 + k.len() as u64 + writer.cur_file_size) >= self.inner.max_file_size_threshold
+            {
                 let old_cur_id = self
+                    .inner
                     .cur_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let new_cur_id = old_cur_id + 1;
@@ -524,7 +591,7 @@ impl TxnalHydraDB {
                 let file = File::options()
                     .create(true)
                     .append(true)
-                    .open(format!("./{}/{}", self.cur_cask, new_cur_id))?;
+                    .open(format!("./{}/{}", self.inner.cur_cask, new_cur_id))?;
 
                 *writer = WriterState {
                     writer: BufWriter::new(file),
@@ -533,7 +600,7 @@ impl TxnalHydraDB {
                 };
                 new_cur_id
             } else {
-                self.cur_id.load(std::sync::atomic::Ordering::Relaxed)
+                self.inner.cur_id.load(std::sync::atomic::Ordering::Relaxed)
             };
 
             let ksz = k.len() as u32;
@@ -550,8 +617,20 @@ impl TxnalHydraDB {
 
             writer.cur_file_size += 21u64 + k.len() as u64;
 
-            self.key_dir.del(k);
-            txn.add_to_write_set(Bytes::copy_from_slice(k));
+            self.inner.key_dir.del(k.clone());
+            let k = Bytes::copy_from_slice(k);
+            txn.add_to_write_set(k.clone());
+            self.inner
+                .txn_write_sets
+                .entry(txn.id())
+                .and_modify(|s| {
+                    s.insert(k.clone());
+                })
+                .or_insert_with(|| {
+                    let mut set = BTreeSet::new();
+                    set.insert(k);
+                    set
+                });
         }
 
         Ok(k_exists)
@@ -559,12 +638,13 @@ impl TxnalHydraDB {
 
     /// lists all the keys in the store
     pub fn list_all(&self) -> Option<Vec<Bytes>> {
-        self.key_dir.keys()
+        self.inner.key_dir.keys()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::error::HydraDBError;
     use crate::txn::IsolationLevel;
     use crate::txnal_builder::TxnalHydraDBBuilder;
     use std::fs;
@@ -573,7 +653,7 @@ mod tests {
     fn test_read_uncommitted() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let mut db = TxnalHydraDBBuilder::new()
+        let db = TxnalHydraDBBuilder::new()
             .with_cask("ruc_test")
             .with_file_limit(100)
             .with_cache_size(5)
@@ -581,7 +661,7 @@ mod tests {
             .unwrap();
         let mut t1 = db.begin_txn();
         let _ = db.put(&mut t1, "abhi", "rust");
-        assert_eq!(db.key_dir.len(), 1);
+        assert_eq!(db.inner.key_dir.len(), 1);
 
         let t2 = db.begin_txn();
         let val = db.get(&t2, "abhi");
@@ -598,7 +678,7 @@ mod tests {
     fn test_rc_reading_val_used_by_uncommitted_txn() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let mut db = TxnalHydraDBBuilder::new()
+        let db = TxnalHydraDBBuilder::new()
             .with_cask("rc_reading_val_used_by_uncommitted_txn")
             .with_file_limit(100)
             .with_cache_size(5)
@@ -608,7 +688,7 @@ mod tests {
 
         let mut t1 = db.begin_txn();
         let _ = db.put(&mut t1, "abhi", "rust");
-        assert_eq!(db.key_dir.len(), 1);
+        assert_eq!(db.inner.key_dir.len(), 1);
 
         let t2 = db.begin_txn();
         let val = db.get(&t2, "abhi");
@@ -623,7 +703,7 @@ mod tests {
     fn test_rc_reading_val_deleted_by_other_txn() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let mut db = TxnalHydraDBBuilder::new()
+        let db = TxnalHydraDBBuilder::new()
             .with_cask("rc_reading_val_deleted_by_other_txn")
             .with_file_limit(100)
             .with_cache_size(5)
@@ -633,12 +713,12 @@ mod tests {
 
         let mut t1 = db.begin_txn();
         let _ = db.put(&mut t1, "abhi", "rust");
-        assert_eq!(db.key_dir.len(), 1);
+        assert_eq!(db.inner.key_dir.len(), 1);
         db.commit(&mut t1);
 
         let mut t1 = db.begin_txn();
-        let _ = db.del(&t1, "abhi");
-        assert_eq!(db.key_dir.len(), 0);
+        let _ = db.del(&mut t1, "abhi");
+        assert_eq!(db.inner.key_dir.len(), 0);
         db.commit(&mut t1);
 
         let t2 = db.begin_txn();
@@ -654,7 +734,7 @@ mod tests {
     fn test_rc_reading_val_deleted_by_self() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let mut db = TxnalHydraDBBuilder::new()
+        let db = TxnalHydraDBBuilder::new()
             .with_cask("rc_reading_val_deleted_by_self")
             .with_file_limit(100)
             .with_cache_size(5)
@@ -664,12 +744,12 @@ mod tests {
 
         let mut t1 = db.begin_txn();
         let _ = db.put(&mut t1, "abhi", "rust");
-        assert_eq!(db.key_dir.len(), 1);
+        assert_eq!(db.inner.key_dir.len(), 1);
         db.commit(&mut t1);
 
-        let t2 = db.begin_txn();
-        let _ = db.del(&t2, "abhi");
-        assert_eq!(db.key_dir.len(), 0);
+        let mut t2 = db.begin_txn();
+        let _ = db.del(&mut t2, "abhi");
+        assert_eq!(db.inner.key_dir.len(), 0);
 
         let val = db.get(&t2, "abhi");
         assert!(val.is_ok());
@@ -683,7 +763,7 @@ mod tests {
     fn test_rr() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let mut db = TxnalHydraDBBuilder::new()
+        let db = TxnalHydraDBBuilder::new()
             .with_cask("rr_test")
             .with_file_limit(100)
             .with_cache_size(5)
@@ -692,7 +772,7 @@ mod tests {
             .unwrap();
 
         let mut t1 = db.begin_txn();
-        let mut t2 = db.begin_txn();
+        let t2 = db.begin_txn();
 
         let _ = db.put(&mut t1, "abhi", "rust");
         let v = db.get(&t1, "abhi");
@@ -717,5 +797,35 @@ mod tests {
         assert_eq!(v, Some("rust".into()));
 
         let _ = fs::remove_dir_all("./rr_test");
+    }
+
+    #[test]
+    fn test_snapshot_isolation() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let db = TxnalHydraDBBuilder::new()
+            .with_cask("si_test")
+            .with_file_limit(100)
+            .with_cache_size(5)
+            .with_isolation_level(IsolationLevel::Snapshot)
+            .build()
+            .unwrap();
+
+        let mut t1 = db.begin_txn();
+
+        let mut t2 = db.begin_txn();
+
+        let mut t3 = db.begin_txn();
+
+        let _ = db.put(&mut t1, "abhi", "rust");
+        let _ = db.commit(&mut t1);
+
+        let _ = db.put(&mut t2, "abhi", "rust");
+        assert_eq!(db.commit(&mut t2), Err(HydraDBError::WriteWriteConflict));
+
+        let _ = db.put(&mut t3, "ashu", "java");
+        let _ = db.commit(&mut t3);
+
+        let _ = fs::remove_dir_all("./si_test");
     }
 }
