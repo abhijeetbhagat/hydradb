@@ -10,6 +10,7 @@ a distributed KV store based on bitcask.
 - snapshotting support.
 
 ## Use as a library
+- transactional & non-transactional databases
 
 ```rust
 
@@ -25,6 +26,25 @@ a distributed KV store based on bitcask.
 
     db.del("abhi")?;
     
+```
+
+db with snapshot isolation mode (using mvcc):
+
+```rust
+
+    let db = TxnalHydraDBBuilder::new()
+    .with_cask("si_test")
+    .with_file_limit(100)
+    .with_cache_size(5)
+    .with_isolation_level(IsolationLevel::Snapshot)
+    .build()
+    .unwrap();
+
+    // start a txn
+    let mut t1 = db.begin_txn();
+    let _ = db.put(&mut t1, "abhi", "rust")?;
+    let _ = db.commit(&mut t1)?;
+
 ```
 
 ## Use as a distributed KV store
