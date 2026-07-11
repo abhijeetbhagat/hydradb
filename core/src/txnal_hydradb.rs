@@ -273,6 +273,7 @@ impl TxnalHydraDB {
             && self.has_conflict(txn)
         {
             txn.set_state(TxnState::Aborted);
+            self.inner.txn_states.insert(txn.id(), TxnState::Aborted);
             return Err(HydraDBError::WriteWriteConflict);
         }
 
